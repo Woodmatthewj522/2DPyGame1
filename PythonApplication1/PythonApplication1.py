@@ -933,11 +933,10 @@ def main():
                 stone_rects.append(stone_rect)
                 del chopped_stones[stone_rect_tuple]
 
-        # --- Player Movement ---
+# Player movement
         if not (show_inventory or show_crafting or show_equipment or is_chopping or is_mining):
             keys = pygame.key.get_pressed()
             dx, dy = handle_movement(keys)
-            
             if current_level == "world":
                 new_player_world_rect = get_player_world_rect().move(dx, dy)
                 if not handle_collision(new_player_world_rect):
