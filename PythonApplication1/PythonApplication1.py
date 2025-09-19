@@ -1,4 +1,5 @@
 ﻿# -*- coding: utf-8 -*-
+from code import interact
 import os
 import random
 import sys
@@ -16,6 +17,10 @@ CRAFTING_TIME_MS = 3000
 ICON_SIZE = 30
 CHOPPING_DURATION = 3000
 RESPAWN_TIME = 1500
+# Player constants
+PLAYER_SIZE = 40
+PLAYER_SIZE_INDOOR = 80
+
 
 # Inventory GUI constants
 INVENTORY_SLOT_SIZE = 40
@@ -96,9 +101,11 @@ house_list = []
 stone_rects = []
 chopped_trees = {}
 chopped_stones = {}
+picked_flowers = {}
 indoor_colliders = []
 flower_tiles = []
 leaf_tiles = []
+
 
 # Crafting button rects
 axe_button_rect = None
@@ -186,7 +193,8 @@ def load_assets():
     axe_item = Item("Axe", axe_image, category="Weapon")
     pickaxe_item = Item("Pickaxe", pickaxe_image, category="Weapon")
     stone_item = Item("Stone", stone_image)
-
+    flower_item = Item("Flower", flower_images[0])
+    
     assets = {
         "grass": grass_image,
         "tree": tree_image,
@@ -207,7 +215,8 @@ def load_assets():
         "axe_item": axe_item,
         "pickaxe_item": pickaxe_item,
         "stone_item": stone_item,
-        "stone_img": stone_image
+        "stone_img": stone_image,
+        "flower_item": flower_item,
     }
     return assets
 
@@ -241,7 +250,7 @@ INDOOR_WALLS = [
 def setup_indoor_colliders():
     global indoor_colliders
     indoor_colliders[:] = [
-        pygame.Rect(0, 0, WIDTH, 10),           # top
+        pygame.Rect(0, 0, WIDTH, 100),           # top
         pygame.Rect(0, HEIGHT-10, WIDTH, 10),   # bottom
         pygame.Rect(0, 0, 10, HEIGHT),          # left
         pygame.Rect(WIDTH-10, 0, 10, HEIGHT)    # right
@@ -402,38 +411,73 @@ def draw_world(screen, assets):
     if house_list:
         screen.blit(assets["house"], (house_list[0].x - map_offset_x, house_list[0].y - map_offset_y))
         screen.blit(assets["house1"], (house_list[1].x - map_offset_x, house_list[1].y - map_offset_y))
+def draw_tooltip(screen, font, text, pos):
+    padding = 6
+    text_surface = font.render(text, True, (255, 255, 255))
+    rect = text_surface.get_rect()
+    rect.midbottom = (pos[0] + 15, pos[1] - 5)  # Offset above object
 
-def draw_prompt(screen, font):
-    """Draws the 'Press E' prompt when a player is near an interactive object."""
-    show_e = False
+    # Background with alpha
+    bg_surf = pygame.Surface((rect.width + 2*padding, rect.height + 2*padding), pygame.SRCALPHA)
+    bg_surf.fill((0, 0, 0, 180))
+    pygame.draw.rect(bg_surf, (255, 255, 255), bg_surf.get_rect(), 1)
+
+    screen.blit(bg_surf, (rect.x - padding, rect.y - padding))
+    screen.blit(text_surface, rect)
+
+def draw_tooltip_for_nearby_objects(screen, font):
+    """Draw a tooltip if the player is near a house, or if the mouse is over interactive objects."""
+    tooltip_text = None
+    tooltip_pos = None
+    mouse_pos = pygame.mouse.get_pos()
     player_world_rect = get_player_world_rect()
-    # Check houses
-    if current_level == "world":
-        if check_house_entry(player_world_rect.inflate(20, 20)) is not None:
-            show_e = True
-        else:
-            # Check trees
-            for tree in tree_rects:
-                if player_world_rect.colliderect(tree.inflate(20, 20)):
-                    show_e = True
-                    break
-            # Check stones
-            if not show_e:
-                for stone in stone_rects:
-                    if player_world_rect.colliderect(stone.inflate(20, 20)):
-                        show_e = True
-                        break
-    else:
-        door_zone = pygame.Rect(WIDTH // 2 - 40, HEIGHT - 100, 80, 80)
-        # player_pos is screen rect
-        if door_zone.colliderect(player_pos.inflate(PLAYER_SIZE * 2, PLAYER_SIZE * 2)):
-            show_e = True
 
-    if show_e and not is_chopping and not is_mining:
-        # show prompt above player (screen coords)
-        text = font.render("Press E", True, (255, 255, 255))
-        text_rect = text.get_rect(centerx=player_pos.centerx, centery=player_pos.y - 30)
-        screen.blit(text, text_rect)
+    if current_level == "world":
+        # --- Houses: always show tooltip if near ---
+        house_index = check_house_entry(player_world_rect)
+        if house_index is not None:
+            house_screen = world_to_screen_rect(house_list[house_index])
+            tooltip_text = "Enter [e]"
+            tooltip_pos = (house_screen.x, house_screen.y)
+
+        # --- Flowers: show only on mouse hover ---
+        if tooltip_text is None:
+            for fx, fy, idx in flower_tiles:
+                flower_rect = pygame.Rect(fx - map_offset_x, fy - map_offset_y, 30, 30)
+                if flower_rect.collidepoint(mouse_pos):
+                    tooltip_text = "Flower [e]"
+                    tooltip_pos = (fx - map_offset_x, fy - map_offset_y)
+                    break
+
+        # --- Trees: show only on mouse hover ---
+        if tooltip_text is None:
+            for tree in tree_rects:
+                tree_screen = world_to_screen_rect(tree)
+                if tree_screen.collidepoint(mouse_pos):
+                    tooltip_text = "Tree [e]"
+                    tooltip_pos = (tree_screen.x, tree_screen.y)
+                    break
+
+        # --- Stones: show only on mouse hover ---
+        if tooltip_text is None:
+            for stone in stone_rects:
+                stone_screen = world_to_screen_rect(stone)
+                if stone_screen.collidepoint(mouse_pos):
+                    tooltip_text = "Stone [e]"
+                    tooltip_pos = (stone_screen.x, stone_screen.y)
+                    break
+
+    else:
+        # Inside house -> Exit door, always show if near
+        door_zone = pygame.Rect(WIDTH // 2 - 40, HEIGHT - 100, 80, 80)
+        if player_pos.colliderect(door_zone):
+            tooltip_text = "Exit [e]"
+            tooltip_pos = door_zone.topleft
+
+    if tooltip_text and tooltip_pos:
+        draw_tooltip(screen, font, tooltip_text, tooltip_pos)
+
+
 
 def draw_inventory(screen, assets):
     """Draws the inventory GUI."""
@@ -635,7 +679,7 @@ def setup_colliders():
     house_list.extend([house_rect_1, house_rect_2])
 
     indoor_colliders[:] = [
-        pygame.Rect(0, 0, WIDTH, 10),     # top wall
+        pygame.Rect(0, 0, WIDTH, 100),     # top wall
         pygame.Rect(0, HEIGHT-10, WIDTH, 10), # bottom wall
         pygame.Rect(0, 0, 10, HEIGHT),       # left wall
         pygame.Rect(WIDTH-10, 0, 10, HEIGHT)  # right wall
@@ -653,7 +697,7 @@ def main():
     global is_chopping, chopping_timer, chopping_target_tree, is_swinging
     global is_crafting, crafting_timer, item_to_craft
     global is_mining, mining_timer, mining_target_stone
-    global player_pos, indoor_colliders, PLAYER_SIZE
+    global player_pos
 
     # --- Initialize ---
     screen, clock = init()
@@ -666,7 +710,7 @@ def main():
     HOUSE_SPAWN_OFFSET_Y = -52  
 
     # Store a larger player size for indoors
-    PLAYER_SIZE_INDOOR = 80
+    PLAYER_SIZE_INDOOR = 150
     
     while True:
         dt = clock.tick(60)
@@ -731,6 +775,16 @@ def main():
                                         mining_timer = 0
                                         current_direction = "idle"
                                         break
+
+                            # --- PRIORITY 4: Pick Flowers ---
+                            for fx, fy, idx in list(flower_tiles):
+                                flower_rect = pygame.Rect(fx, fy, 30, 30)  # match the drawn flower size
+                                if player_world_rect.colliderect(flower_rect.inflate(10, 10)):
+                                    add_item_to_inventory(assets["flower_item"])
+                                    flower_tiles.remove((fx, fy, idx))
+                                    print("Picked a flower!")
+                                    break
+
                             else:
                                 print("You need an Axe to chop trees or a Pickaxe to mine stone!")
                     else:
@@ -925,7 +979,8 @@ def main():
             screen.blit(scaled_frame, player_pos)
 
         draw_hud(screen, assets)
-        draw_prompt(screen, assets["small_font"])
+        draw_tooltip_for_nearby_objects(screen, assets["small_font"])
+
 
         # Draw UI panels
         if show_inventory:
