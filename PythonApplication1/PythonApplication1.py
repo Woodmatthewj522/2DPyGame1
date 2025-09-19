@@ -230,19 +230,24 @@ def exit_house():
 # --- Indoor Colliders (adjustable!) ---
 # Define each wall or obstacle as (x, y, width, height)
 INDOOR_WALLS = [
-    (0, 0, WIDTH, 10),            # Top wall
+    (0, 0, WIDTH, 10),              # Top wall
     (0, HEIGHT - 10, WIDTH, 10),  # Bottom wall
-    (0, 0, 10, HEIGHT),           # Left wall
+    (0, 0, 10, HEIGHT),             # Left wall
     (WIDTH - 10, 0, 10, HEIGHT),  # Right wall
     # Add more walls or furniture here
-    (200, 150, 100, 20),          # Example table
-    (400, 300, 150, 30)           # Example counter
+    (200, 150, 100, 20),           # Example table
+    (400, 300, 150, 30)             # Example counter
 ]
 
 def setup_indoor_colliders():
-    """Converts INDOOR_WALLS tuples into pygame.Rect objects."""
     global indoor_colliders
-    indoor_colliders = [pygame.Rect(x, y, w, h) for (x, y, w, h) in INDOOR_WALLS]
+    indoor_colliders[:] = [
+        pygame.Rect(0, 0, WIDTH, 10),           # top
+        pygame.Rect(0, HEIGHT-10, WIDTH, 10),   # bottom
+        pygame.Rect(0, 0, 10, HEIGHT),          # left
+        pygame.Rect(WIDTH-10, 0, 10, HEIGHT)    # right
+    ]
+
 
 # --- SETUP COLLIDERS AND WORLD ---
 def setup_colliders():
@@ -290,10 +295,10 @@ def setup_colliders():
     house_list.extend([house_rect_1, house_rect_2])
 
     indoor_colliders[:] = [
-        pygame.Rect(0, 0, WIDTH, 10),          # top wall
+        pygame.Rect(0, 0, WIDTH, 10),        # top wall
         pygame.Rect(0, HEIGHT-10, WIDTH, 10),  # bottom wall
-        pygame.Rect(0, 0, 10, HEIGHT),         # left wall
-        pygame.Rect(WIDTH-10, 0, 10, HEIGHT)   # right wall
+        pygame.Rect(0, 0, 10, HEIGHT),       # left wall
+        pygame.Rect(WIDTH-10, 0, 10, HEIGHT)  # right wall
     ]
 
 def give_starting_items(assets):
@@ -510,7 +515,8 @@ def draw_equipment_panel(screen, assets):
     screen.blit(header_text, header_text.get_rect(centerx=header_rect.centerx, top=EQUIPMENT_Y + 10))
 
     # Draw weapon slot
-    weapon_slot_rect = pygame.Rect(EQUIPMENT_X + EQUIPMENT_GAP, EQUIPMENT_Y + 40 + EQUIPMENT_GAP, EQUIPMENT_SLOT_SIZE, EQUIPMENT_SLOT_SIZE)
+    weapon_slot_rect = pygame.Rect(EQUIPMENT_X + EQUIPMENT_GAP, EQUIPMENT_Y + 40 + EQUIPMENT_GAP,
+                                     EQUIPMENT_SLOT_SIZE, EQUIPMENT_SLOT_SIZE)
     pygame.draw.rect(screen, (70, 70, 70), weapon_slot_rect)
     pygame.draw.rect(screen, (150, 150, 150), weapon_slot_rect, 2)
 
@@ -575,6 +581,71 @@ def check_house_entry(world_rect):
             return i
     return None
 
+# --- HELPERS FOR COORDINATES ---
+def get_player_world_rect():
+    """Return the player's rectangle in world coordinates."""
+    # This function should be fixed to handle both indoor/outdoor states.
+    # The existing logic is correct for the 'world' level.
+    # We will use it for collision checks with world objects.
+    return player_pos.move(map_offset_x, map_offset_y)
+
+def world_to_screen_rect(world_rect):
+    """Convert a world rect to screen coordinates (pygame.Rect)."""
+    return pygame.Rect(world_rect.x - map_offset_x, world_rect.y - map_offset_y, world_rect.width, world_rect.height)
+
+# --- SETUP COLLIDERS AND WORLD ---
+def setup_colliders():
+    """Generates the world colliders for the current level."""
+    global tree_rects, house_list, indoor_colliders, flower_tiles, leaf_tiles, stone_rects
+    tree_rects.clear()
+    flower_tiles.clear()
+    leaf_tiles.clear()
+    house_list.clear()
+    stone_rects.clear()
+
+    # DO NOT put pygame.init() inside here, it's already done in the main init() function
+    # The redundant screen and clock initialization has been removed.
+
+    player_world_rect = get_player_world_rect()
+    map_cols, map_rows = 50, 50
+
+    for row in range(map_rows):
+        for col in range(map_cols):
+            x = col * TILE_SIZE
+            y = row * TILE_SIZE
+            # Borders
+            if row < BORDER_THICKNESS or row >= map_rows - BORDER_THICKNESS or col < BORDER_THICKNESS or col >= map_cols - BORDER_THICKNESS:
+                tree_rects.append(pygame.Rect(x + 5, y + 5, TILE_SIZE - 10, TILE_SIZE - 10))
+            else:
+                rnd = random.random()
+                if rnd < 0.02:
+                    tree_rects.append(pygame.Rect(x + 5, y + 5, TILE_SIZE - 10, TILE_SIZE - 10))
+                elif rnd < 0.035:
+                    offset = (TILE_SIZE - (TILE_SIZE // 2)) // 2
+                    stone_rect = pygame.Rect(x + offset, y + offset, TILE_SIZE // 2, TILE_SIZE // 2)
+                    stone_rects.append(stone_rect)
+                elif rnd < 0.065:
+                    flower_tiles.append((x + 10, y + 10, random.randint(0, 1)))
+                elif rnd < 0.185:
+                    leaf_tiles.append((x + random.randint(8, 14), y + random.randint(8, 14)))
+
+    # Place two houses near the player's current world position
+    house_rect_1 = pygame.Rect(player_world_rect.x + 100, player_world_rect.y, TILE_SIZE * 2, TILE_SIZE * 2)
+    house_rect_2 = pygame.Rect(house_rect_1.x + 200, house_rect_1.y, TILE_SIZE * 2, TILE_SIZE * 2)
+    tree_rects.extend([house_rect_1, house_rect_2])
+    house_list.extend([house_rect_1, house_rect_2])
+
+    indoor_colliders[:] = [
+        pygame.Rect(0, 0, WIDTH, 10),     # top wall
+        pygame.Rect(0, HEIGHT-10, WIDTH, 10), # bottom wall
+        pygame.Rect(0, 0, 10, HEIGHT),       # left wall
+        pygame.Rect(WIDTH-10, 0, 10, HEIGHT)  # right wall
+    ]
+
+# The rest of the functions are unchanged from the previous version,
+# so they are not included in this code block for brevity.
+
+# --- MAIN GAME LOGIC ---
 def main():
     """Main game loop."""
     global map_offset_x, map_offset_y, current_level, current_house_index
@@ -583,13 +654,7 @@ def main():
     global is_chopping, chopping_timer, chopping_target_tree, is_swinging
     global is_crafting, crafting_timer, item_to_craft
     global is_mining, mining_timer, mining_target_stone
-    global player_pos, indoor_colliders
-
-    # Example house exits (unused directly but kept)
-    house_exits = {
-        "house1": (350, 420),
-        "house2": (1200, 750),
-    }
+    global player_pos, indoor_colliders, PLAYER_SIZE
 
     # --- Initialize ---
     screen, clock = init()
@@ -598,7 +663,10 @@ def main():
     chopping_frames = load_chopping_frames()
     setup_colliders()
     give_starting_items(assets)
-
+    
+    # Store a larger player size for indoors
+    PLAYER_SIZE_INDOOR = 80
+    
     while True:
         dt = clock.tick(60)
         current_time = pygame.time.get_ticks()
@@ -617,7 +685,7 @@ def main():
             if event.type == pygame.QUIT:
                 pygame.quit()
                 sys.exit()
-
+            
             if event.type == pygame.KEYDOWN:
                 # Toggle UI panels
                 if event.key == pygame.K_i:
@@ -629,64 +697,61 @@ def main():
                 elif event.key == pygame.K_r and not (is_chopping or is_crafting):
                     show_equipment = not show_equipment
                     show_inventory = show_crafting = False
-
+    
                 # --- Interact with World ---
                 player_world_rect = get_player_world_rect()
                 if event.key == pygame.K_e:
                     if current_level == "world":
                         # --- PRIORITY 1: Enter House ---
-                        house_index = check_house_entry(player_pos)
+                        house_index = check_house_entry(player_world_rect)
                         if house_index is not None:
                             current_level = "house"
                             current_house_index = house_index
-                            player_pos.x = WIDTH // 2
-                            player_pos.y = HEIGHT // 2
+                            # Resize player_pos rect and place it in the center of the screen
+                            player_pos.size = (PLAYER_SIZE_INDOOR, PLAYER_SIZE_INDOOR)
+                            player_pos.center = (WIDTH // 2, HEIGHT // 2)
                             setup_indoor_colliders()
                         else:
                             # --- PRIORITY 2: Chop Trees ---
-                            for tree in list(tree_rects):
-                                if player_world_rect.colliderect(tree.inflate(20, 20)):
-                                    if equipment_slots["weapon"] is None:
-                                        print("Equip a tool to chop!")
-                                    else:
+                            if equipment_slots["weapon"] and equipment_slots["weapon"].name == "Axe":
+                                for tree in list(tree_rects):
+                                    if player_world_rect.colliderect(tree.inflate(20, 20)):
                                         is_chopping = True
                                         chopping_target_tree = tree
                                         chopping_timer = 0
                                         current_direction = "idle"
-                                    break
+                                        break
                             # --- PRIORITY 3: Mine Stones ---
-                            for stone in list(stone_rects):
-                                if player_world_rect.colliderect(stone.inflate(20, 20)):
-                                    if equipment_slots["weapon"] is None or equipment_slots["weapon"].name != "Pickaxe":
-                                        print("You need a Pickaxe to mine stone!")
-                                    else:
+                            elif equipment_slots["weapon"] and equipment_slots["weapon"].name == "Pickaxe":
+                                for stone in list(stone_rects):
+                                    if player_world_rect.colliderect(stone.inflate(20, 20)):
                                         is_mining = True
                                         mining_target_stone = stone
                                         mining_timer = 0
                                         current_direction = "idle"
-                                    break
-
-                            # Mining Stones
-                            for stone in list(stone_rects):
-                                if player_world_rect.colliderect(stone.inflate(20, 20)):
-                                    if equipment_slots["weapon"] is None or equipment_slots["weapon"].name != "Pickaxe":
-                                        print("You need a Pickaxe to mine stone!")
-                                    else:
-                                        is_mining = True
-                                        mining_target_stone = stone
-                                        mining_timer = 0
-                                        current_direction = "idle"
-                                    break
+                                        break
+                            else:
+                                print("You need an Axe to chop trees or a Pickaxe to mine stone!")
                     else:
                         # Inside house -> Exit
                         door_zone = pygame.Rect(WIDTH // 2 - 40, HEIGHT - 100, 80, 80)
-                        if door_zone.colliderect(player_pos.inflate(PLAYER_SIZE * 2, PLAYER_SIZE * 2)):
+                        # Check if the player is in the door zone
+                        if door_zone.colliderect(player_pos.inflate(PLAYER_SIZE_INDOOR * 2, PLAYER_SIZE_INDOOR * 2)):
                             current_level = "world"
+                            player_pos.size = (PLAYER_SIZE, PLAYER_SIZE)
+    
+                            # Spawn in front of the house
                             exit_rect = house_list[current_house_index]
-                            map_offset_x = player_pos.x - exit_rect.x
-                            map_offset_y = player_pos.y - exit_rect.y
+                            player_pos.centerx = exit_rect.centerx
+                            player_pos.top = exit_rect.bottom + 5
+
+                            # Update world offset
+                            map_offset_x = player_pos.x - WIDTH // 2
+                            map_offset_y = player_pos.y - HEIGHT // 2
+
                             current_house_index = None
 
+    
             # --- Mouse Button Handling (Crafting / Equipment / Inventory) ---
             if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
                 # Crafting
@@ -712,7 +777,7 @@ def main():
                 # Equipment
                 if show_equipment:
                     weapon_slot_rect = pygame.Rect(EQUIPMENT_X + EQUIPMENT_GAP, EQUIPMENT_Y + 40 + EQUIPMENT_GAP,
-                                                   EQUIPMENT_SLOT_SIZE, EQUIPMENT_SLOT_SIZE)
+                                                    EQUIPMENT_SLOT_SIZE, EQUIPMENT_SLOT_SIZE)
                     if weapon_slot_rect.collidepoint(event.pos):
                         unequip_item()
                 # Inventory
@@ -727,98 +792,105 @@ def main():
                                 if item_to_equip and item_to_equip.category == "Weapon":
                                     if equip_item(item_to_equip):
                                         inventory[row][col] = None
-                                    break
+                                        break
 
         # --- Game State Updates ---
         # Crafting
         if is_crafting:
             crafting_timer += dt
             if crafting_timer >= CRAFTING_TIME_MS:
+                if add_item_to_inventory(item_to_craft):
+                    print(f"Crafting complete! {item_to_craft.name} added to inventory.")
+                else:
+                    print(f"Crafting failed: Inventory is full. {item_to_craft.name} materials refunded.")
+                    add_item_to_inventory(assets["log_item"], item_to_craft.craft_cost)  # Assuming a craft_cost attribute
                 is_crafting = False
-                crafting_timer = 0
-                add_item_to_inventory(item_to_craft)
-                print(f"Crafting complete! {item_to_craft.name} added to inventory.")
                 item_to_craft = None
 
-        # Chopping
+        # Chopping animation
         if is_chopping:
             chopping_timer += dt
-            if chopping_timer >= CHOPPING_DURATION:
-                is_chopping = False
-                chopping_timer = 0
-                if chopping_target_tree in tree_rects:
-                    tree_rects.remove(chopping_target_tree)
-                    chopped_trees[(chopping_target_tree.x, chopping_target_tree.y)] = current_time + TREE_RESPAWN_TIME
-                    add_item_to_inventory(assets["log_item"])
-                    print("You chopped down the tree and got a log!")
-                chopping_target_tree = None
-
-        # Mining
-        if is_mining:
-            mining_timer += dt
-            if mining_timer >= MINING_DURATION:
-                is_mining = False
-                mining_timer = 0
-                if mining_target_stone in stone_rects:
-                    stone_rects.remove(mining_target_stone)
-                    chopped_stones[(mining_target_stone.x, mining_target_stone.y)] = current_time + STONE_RESPAWN_TIME
-                    add_item_to_inventory(assets["stone_item"])
-                    print("You mined the stone and got a stone!")
-                mining_target_stone = None
-
-        # Respawn trees
-        for tree_key, t in list(chopped_trees.items()):
-            if current_time >= t:
-                tree_rects.append(pygame.Rect(tree_key[0], tree_key[1], TILE_SIZE - 10, TILE_SIZE - 10))
-                del chopped_trees[tree_key]
-
-        # Respawn stones
-        for stone_key, t in list(chopped_stones.items()):
-            if current_time >= t:
-                stone_rects.append(pygame.Rect(stone_key[0], stone_key[1], TILE_SIZE // 2, TILE_SIZE // 2))
-                del chopped_stones[stone_key]
-
-        # --- Player Animation ---
-        player_frame_timer += dt
-        if is_chopping:
-            if is_swinging:
+            player_frame_timer += dt
+            if player_frame_timer > idle_chop_delay:
+                is_swinging = True
                 if player_frame_timer >= swing_delay:
                     player_frame_index = (player_frame_index + 1) % len(chopping_frames[last_direction])
                     player_frame_timer = 0
-                    if player_frame_index == 0:
-                        is_swinging = False
-            else:
-                if player_frame_timer >= idle_chop_delay:
-                    is_swinging = True
+
+            if chopping_timer >= CHOPPING_DURATION:
+                if chopping_target_tree in tree_rects:
+                    tree_rects.remove(chopping_target_tree)
+                    # Fix: Use a tuple of the Rect's values as the dictionary key
+                    chopped_trees[(chopping_target_tree.x, chopping_target_tree.y, chopping_target_tree.width, chopping_target_tree.height)] = current_time
+                    add_item_to_inventory(assets["log_item"])
+                    print("Chopped a tree! Gained a log.")
+                is_chopping = False
+                is_swinging = False
+                chopping_timer = 0
+                chopping_target_tree = None
+                current_direction = "idle"
+
+        # Mining animation
+        if is_mining:
+            mining_timer += dt
+            player_frame_timer += dt
+            if player_frame_timer > idle_chop_delay:
+                is_swinging = True
+                if player_frame_timer >= swing_delay:
+                    player_frame_index = (player_frame_index + 1) % len(chopping_frames[last_direction])
                     player_frame_timer = 0
-                    player_frame_index = 0
-            current_frame = chopping_frames[last_direction][player_frame_index]
-        else:
-            player_frame_delay = 120
-            if current_direction == "idle":
-                current_frame = player_frames["idle"][0]
-                player_frame_index = 0
-            else:
-                if player_frame_timer >= player_frame_delay:
-                    player_frame_index = (player_frame_index + 1) % len(player_frames.get(current_direction, player_frames["idle"]))
-                    player_frame_timer = 0
-                current_frame = player_frames.get(current_direction, player_frames["idle"])[player_frame_index]
+
+            if mining_timer >= MINING_DURATION:
+                if mining_target_stone in stone_rects:
+                    stone_rects.remove(mining_target_stone)
+                    # Fix: Use a tuple of the Rect's values as the dictionary key
+                    chopped_stones[(mining_target_stone.x, mining_target_stone.y, mining_target_stone.width, mining_target_stone.height)] = current_time
+                    add_item_to_inventory(assets["stone_item"])
+                    print("Mined a stone!")
+                is_mining = False
+                is_swinging = False
+                mining_timer = 0
+                mining_target_stone = None
+                current_direction = "idle"
+
+        # Respawn logic
+        # Fix: Convert keys back to Rects for collision checking
+        for tree_rect_tuple, time_chopped in list(chopped_trees.items()):
+            tree_rect = pygame.Rect(tree_rect_tuple)
+            if current_time - time_chopped > TREE_RESPAWN_TIME:
+                tree_rects.append(tree_rect)
+                del chopped_trees[tree_rect_tuple]
+
+        for stone_rect_tuple, time_mined in list(chopped_stones.items()):
+            stone_rect = pygame.Rect(stone_rect_tuple)
+            if current_time - time_mined > STONE_RESPAWN_TIME:
+                stone_rects.append(stone_rect)
+                del chopped_stones[stone_rect_tuple]
 
         # --- Player Movement ---
-        if not any([show_inventory, show_crafting, show_equipment, is_chopping, is_mining]):
+        if not (show_inventory or show_crafting or show_equipment or is_chopping or is_mining):
             keys = pygame.key.get_pressed()
             dx, dy = handle_movement(keys)
-            if dx != 0 or dy != 0:
-                player_world_rect = get_player_world_rect()
-                new_world_rect = player_world_rect.move(dx, dy)
-                if not handle_collision(new_world_rect):
-                    if current_level == "world":
-                        map_offset_x += dx
-                        map_offset_y += dy
-                    else:
-                        player_pos.x += dx
-                        player_pos.y += dy
+            
+            if current_level == "world":
+                new_player_world_rect = get_player_world_rect().move(dx, dy)
+                if not handle_collision(new_player_world_rect):
+                    map_offset_x += dx
+                    map_offset_y += dy
+            else: # current_level == "house"
+                new_player_pos = player_pos.move(dx, dy)
+                if not handle_collision(new_player_pos): # check collision using screen coordinates
+                    player_pos = new_player_pos
 
+        # Animation state update
+        if not is_chopping and not is_mining:
+            player_frame_timer += dt
+            if current_direction == "idle":
+                player_frame_index = 0
+            elif player_frame_timer > player_frame_delay:
+                player_frame_index = (player_frame_index + 1) % len(player_frames[current_direction])
+                player_frame_timer = 0
+                
         # --- Drawing ---
         screen.fill((0, 0, 0))
         if current_level == "world":
@@ -826,26 +898,24 @@ def main():
         else:
             screen.blit(assets["interiors"][current_house_index], (0, 0))
 
+        # Determine the current size of the player for drawing and scaling
+        player_size_current = player_pos.width # Use the Rect's current size
+
         # Draw player
-        if current_level == "world":
-            screen.blit(current_frame, (player_pos.x, player_pos.y))
+        if is_chopping or is_mining:
+            # Scale chopping frames based on current player size
+            scaled_frame = pygame.transform.scale(chopping_frames[last_direction][player_frame_index], (player_size_current, player_size_current))
+            screen.blit(scaled_frame, player_pos)
         else:
-            scaled_frame = pygame.transform.scale(current_frame, (PLAYER_SIZE * 4, PLAYER_SIZE * 4))
-            screen.blit(scaled_frame, (player_pos.x - scaled_frame.get_width() // 2,
-                                       player_pos.y - scaled_frame.get_height() // 2))
+            # Scale regular frames based on current player size
+            frame_set = player_frames.get(current_direction, player_frames["idle"])
+            scaled_frame = pygame.transform.scale(frame_set[player_frame_index], (player_size_current, player_size_current))
+            screen.blit(scaled_frame, player_pos)
 
-        # Action Progress Bars
-        if is_chopping:
-            progress = (chopping_timer / CHOPPING_DURATION) * 100
-            progress_text = assets["small_font"].render(f"Chopping: {int(progress)}%", True, (255, 255, 255))
-            screen.blit(progress_text, (player_pos.x - 10, player_pos.y - 60))
-        if is_mining:
-            progress = (mining_timer / MINING_DURATION) * 100
-            progress_text = assets["small_font"].render(f"Mining: {int(progress)}%", True, (255, 255, 255))
-            screen.blit(progress_text, (player_pos.x - 10, player_pos.y - 60))
-
-        draw_prompt(screen, assets["font"])
         draw_hud(screen, assets)
+        draw_prompt(screen, assets["small_font"])
+
+        # Draw UI panels
         if show_inventory:
             draw_inventory(screen, assets)
         if show_crafting:
@@ -855,6 +925,5 @@ def main():
 
         pygame.display.flip()
 
-
-if __name__ == "__main__":
+if __name__ == '__main__':
     main()
