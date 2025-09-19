@@ -1,6 +1,9 @@
 ﻿# -*- coding: utf-8 -*-
 import os
 import random
+import sys
+import pygame, json, sys
+
 
 # --- CONSTANTS ---
 WIDTH, HEIGHT = 800, 600
@@ -51,8 +54,10 @@ class Item:
         self.category = category
 
 # --- GAME STATE GLOBALS ---
-player_pos = pygame.Rect(WIDTH // 2, HEIGHT // 2, PLAYER_SIZE, PLAYER_SIZE)
-map_offset_x = map_offset_y = 0
+# Player is kept at a fixed screen position (center). World moves (map_offset).
+player_pos = pygame.Rect(WIDTH // 2, HEIGHT // 2, PLAYER_SIZE, PLAYER_SIZE)  # screen coordinates
+map_offset_x = 0  # how much world is shifted (subtracted when drawing): screen_x = world_x - map_offset_x
+map_offset_y = 0
 current_level = "world"
 current_house_index = None
 
@@ -71,6 +76,11 @@ is_swinging = False
 swing_delay = 150
 idle_chop_delay = 500
 
+# Stone specific state
+is_mining = False
+mining_timer = 0
+mining_target_stone = None
+
 # UI state
 show_inventory = False
 show_crafting = False
@@ -84,6 +94,9 @@ inventory = [[None for _ in range(4)] for _ in range(4)]
 equipment_slots = {"weapon": None}
 tree_rects = []
 house_list = []
+stone_rects = []
+chopped_trees = {}
+chopped_stones = {}
 indoor_colliders = []
 flower_tiles = []
 leaf_tiles = []
@@ -91,7 +104,15 @@ leaf_tiles = []
 # Crafting button rects
 axe_button_rect = None
 pickaxe_button_rect = None
-other_button_rect = None
+
+# --- HELPERS FOR COORDINATES ---
+def get_player_world_rect():
+    """Return the player's rectangle in world coordinates."""
+    return player_pos.move(map_offset_x, map_offset_y)
+
+def world_to_screen_rect(world_rect):
+    """Convert a world rect to screen coordinates (pygame.Rect)."""
+    return pygame.Rect(world_rect.x - map_offset_x, world_rect.y - map_offset_y, world_rect.width, world_rect.height)
 
 # --- INIT ---
 def init():
@@ -100,7 +121,6 @@ def init():
     screen = pygame.display.set_mode((WIDTH, HEIGHT))
     pygame.display.set_caption("Not Pokemon")
     return screen, pygame.time.Clock()
-
 
 # --- LOAD ASSETS ---
 def load_player_frames():
@@ -129,12 +149,12 @@ def load_assets():
     """Loads all game assets and defines Item objects."""
     tile_folder = "Tiles"
     sheet = pygame.image.load("OutdoorStuff.PNG").convert_alpha()
-    
+
     # Load and scale static images
     grass_image = pygame.transform.scale(pygame.image.load(os.path.join(tile_folder, "grass_middle.png")).convert_alpha(), (TILE_SIZE, TILE_SIZE))
-    tree_image = pygame.transform.scale(pygame.image.load(os.path.join(tile_folder, "tree.png")).convert_alpha(), (TILE_SIZE, TILE_SIZE))
-    house_image = pygame.transform.scale(pygame.image.load(os.path.join(tile_folder, "house.png")).convert_alpha(), (TILE_SIZE*2, TILE_SIZE*2))
-    house1_image = pygame.transform.scale(pygame.image.load(os.path.join(tile_folder, "house1.png")).convert_alpha(), (TILE_SIZE*2, TILE_SIZE*2))
+    tree_image = pygame.transform.scale(pygame.image.load(os.path.join(tile_folder, "tree.png")).convert_alpha(), (TILE_SIZE + 5, TILE_SIZE + 5))
+    house_image = pygame.transform.scale(pygame.image.load(os.path.join(tile_folder, "house.png")).convert_alpha(), (TILE_SIZE * 2, TILE_SIZE * 2))
+    house1_image = pygame.transform.scale(pygame.image.load(os.path.join(tile_folder, "house1.png")).convert_alpha(), (TILE_SIZE * 2, TILE_SIZE * 2))
     flower_positions = [(0, 144), (16, 144)]
     flower_images = [pygame.transform.scale(sheet.subsurface(pygame.Rect(x, y, 16, 16)), (30, 30)) for (x, y) in flower_positions]
     leaf_image = pygame.transform.scale(sheet.subsurface(pygame.Rect(0, 0, 16, 16)), (25, 25))
@@ -146,21 +166,27 @@ def load_assets():
     crafting_icon = pygame.transform.scale(pygame.image.load("craft.png").convert_alpha(), (ICON_SIZE, ICON_SIZE))
     equipment_icon = pygame.transform.scale(pygame.image.load("equipped.png").convert_alpha(), (ICON_SIZE, ICON_SIZE))
 
-    # Load item images
+    # Load item images (with fallback surfaces)
     try:
         axe_image = pygame.transform.scale(pygame.image.load("axe.png").convert_alpha(), (TILE_SIZE, TILE_SIZE))
     except pygame.error:
         axe_image = pygame.Surface((TILE_SIZE, TILE_SIZE)); axe_image.fill((255, 0, 0))
-    
+
     try:
         pickaxe_image = pygame.transform.scale(pygame.image.load("pickaxe.png").convert_alpha(), (TILE_SIZE, TILE_SIZE))
     except pygame.error:
         pickaxe_image = pygame.Surface((TILE_SIZE, TILE_SIZE)); pickaxe_image.fill((100, 100, 100))
 
+    try:
+        stone_image = pygame.transform.scale(pygame.image.load("stone.png").convert_alpha(), (TILE_SIZE // 2, TILE_SIZE // 2))
+    except pygame.error:
+        stone_image = pygame.Surface((TILE_SIZE, TILE_SIZE)); stone_image.fill((150, 150, 150))
+
     # Define Item objects
     log_item = Item("Log", log_image)
     axe_item = Item("Axe", axe_image, category="Weapon")
     pickaxe_item = Item("Pickaxe", pickaxe_image, category="Weapon")
+    stone_item = Item("Stone", stone_image)
 
     assets = {
         "grass": grass_image,
@@ -180,41 +206,94 @@ def load_assets():
         "equipment_icon": equipment_icon,
         "log_item": log_item,
         "axe_item": axe_item,
-        "pickaxe_item": pickaxe_item
+        "pickaxe_item": pickaxe_item,
+        "stone_item": stone_item,
+        "stone_img": stone_image
     }
     return assets
 
+#MAP SWITCHING
+def enter_house():
+    global current_map, colliders
+    current_map = "house1"
+    colliders = load_colliders(current_map)
+    # safe indoor spawn
+    player.x, player.y = 80, 240
+
+def exit_house():
+    global current_map, colliders
+    current_map = "outdoors"
+    colliders = load_colliders(current_map)
+    # safe outdoor spawn
+    player.x, player.y = 120, 120
+
+# --- Indoor Colliders (adjustable!) ---
+# Define each wall or obstacle as (x, y, width, height)
+INDOOR_WALLS = [
+    (0, 0, WIDTH, 10),            # Top wall
+    (0, HEIGHT - 10, WIDTH, 10),  # Bottom wall
+    (0, 0, 10, HEIGHT),           # Left wall
+    (WIDTH - 10, 0, 10, HEIGHT),  # Right wall
+    # Add more walls or furniture here
+    (200, 150, 100, 20),          # Example table
+    (400, 300, 150, 30)           # Example counter
+]
+
+def setup_indoor_colliders():
+    """Converts INDOOR_WALLS tuples into pygame.Rect objects."""
+    global indoor_colliders
+    indoor_colliders = [pygame.Rect(x, y, w, h) for (x, y, w, h) in INDOOR_WALLS]
 
 # --- SETUP COLLIDERS AND WORLD ---
 def setup_colliders():
     """Generates the world colliders for the current level."""
-    global tree_rects, house_list, indoor_colliders, flower_tiles, leaf_tiles
-    tree_rects.clear(); flower_tiles.clear(); leaf_tiles.clear(); house_list.clear()
-    
+    global tree_rects, house_list, indoor_colliders, flower_tiles, leaf_tiles, stone_rects
+    tree_rects.clear()
+    flower_tiles.clear()
+    leaf_tiles.clear()
+    house_list.clear()
+    stone_rects.clear()
+
+    pygame.init()
+    screen = pygame.display.set_mode((640, 480))
+    pygame.display.set_caption("Indoor/Outdoor Colliders")
+    clock = pygame.time.Clock()
+
+
+    player_world_rect = get_player_world_rect()
     map_cols, map_rows = 50, 50
+
     for row in range(map_rows):
         for col in range(map_cols):
             x = col * TILE_SIZE
             y = row * TILE_SIZE
+            # Borders
             if row < BORDER_THICKNESS or row >= map_rows - BORDER_THICKNESS or col < BORDER_THICKNESS or col >= map_cols - BORDER_THICKNESS:
-                tree_rects.append(pygame.Rect(x+5, y+5, TILE_SIZE-10, TILE_SIZE-10))
-            elif random.random() < 0.02:
-                tree_rects.append(pygame.Rect(x+5, y+5, TILE_SIZE-10, TILE_SIZE-10))
-            elif random.random() < 0.03:
-                flower_tiles.append((x+10, y+10, random.randint(0, 1)))
-            elif random.random() < 0.12:
-                leaf_tiles.append((x+random.randint(8,14), y+random.randint(8,14)))
+                tree_rects.append(pygame.Rect(x + 5, y + 5, TILE_SIZE - 10, TILE_SIZE - 10))
+            else:
+                rnd = random.random()
+                if rnd < 0.02:
+                    tree_rects.append(pygame.Rect(x + 5, y + 5, TILE_SIZE - 10, TILE_SIZE - 10))
+                elif rnd < 0.035:
+                    offset = (TILE_SIZE - (TILE_SIZE // 2)) // 2
+                    stone_rect = pygame.Rect(x + offset, y + offset, TILE_SIZE // 2, TILE_SIZE // 2)
+                    stone_rects.append(stone_rect)
+                elif rnd < 0.065:
+                    flower_tiles.append((x + 10, y + 10, random.randint(0, 1)))
+                elif rnd < 0.185:
+                    leaf_tiles.append((x + random.randint(8, 14), y + random.randint(8, 14)))
 
-    house_rect_1 = pygame.Rect(player_pos.x + 100, player_pos.y, TILE_SIZE*2, TILE_SIZE*2)
-    house_rect_2 = pygame.Rect(house_rect_1.x + 200, house_rect_1.y, TILE_SIZE*2, TILE_SIZE*2)
+    # Place two houses near the player's current world position
+    house_rect_1 = pygame.Rect(player_world_rect.x + 100, player_world_rect.y, TILE_SIZE * 2, TILE_SIZE * 2)
+    house_rect_2 = pygame.Rect(house_rect_1.x + 200, house_rect_1.y, TILE_SIZE * 2, TILE_SIZE * 2)
     tree_rects.extend([house_rect_1, house_rect_2])
     house_list.extend([house_rect_1, house_rect_2])
 
     indoor_colliders[:] = [
-        pygame.Rect(0, 80, WIDTH, 2),
-        pygame.Rect(0, HEIGHT-70, WIDTH, 2),
-        pygame.Rect(-40, 0, 1, HEIGHT),
-        pygame.Rect(WIDTH-60, 0, 2, HEIGHT)
+        pygame.Rect(0, 0, WIDTH, 10),          # top wall
+        pygame.Rect(0, HEIGHT-10, WIDTH, 10),  # bottom wall
+        pygame.Rect(0, 0, 10, HEIGHT),         # left wall
+        pygame.Rect(WIDTH-10, 0, 10, HEIGHT)   # right wall
     ]
 
 def give_starting_items(assets):
@@ -223,17 +302,16 @@ def give_starting_items(assets):
         add_item_to_inventory(assets["log_item"])
     add_item_to_inventory(assets["axe_item"])
 
-
 # --- INVENTORY/CRAFTING/EQUIPMENT LOGIC ---
 def add_item_to_inventory(item_to_add):
-    """Adds an item to the first available slot in the inventory."""
+    """Adds an item to the first available slot in the inventory (stack up to 20)."""
     for row in range(4):
         for col in range(4):
             slot = inventory[row][col]
             if slot and slot.name == item_to_add.name and slot.count < 20:
                 slot.count += 1
                 return True
-    
+
     for row in range(4):
         for col in range(4):
             if inventory[row][col] is None:
@@ -269,8 +347,8 @@ def remove_item_from_inventory(item_name, quantity):
     return False
 
 def equip_item(item_to_equip):
-    """Equips a weapon from the inventory."""
-    if item_to_equip.category == "Weapon":
+    """Equips a weapon from the inventory to the weapon slot."""
+    if item_to_equip and item_to_equip.category == "Weapon":
         if equipment_slots["weapon"] is None:
             equipment_slots["weapon"] = item_to_equip
             print(f"{item_to_equip.name} equipped!")
@@ -280,7 +358,7 @@ def equip_item(item_to_equip):
     return False
 
 def unequip_item():
-    """Unequips the currently held weapon."""
+    """Unequips the currently held weapon (places back into inventory if possible)."""
     item_to_unequip = equipment_slots.get("weapon")
     if item_to_unequip:
         if add_item_to_inventory(item_to_unequip):
@@ -291,7 +369,6 @@ def unequip_item():
             print("Inventory is full, cannot unequip.")
     return False
 
-
 # --- DRAW FUNCTIONS ---
 def draw_world(screen, assets):
     """Draws the outdoor world and its objects."""
@@ -299,44 +376,59 @@ def draw_world(screen, assets):
     start_row = map_offset_y // TILE_SIZE
     cols_to_draw = (WIDTH // TILE_SIZE) + 3
     rows_to_draw = (HEIGHT // TILE_SIZE) + 3
+    tree_size_diff = 5
 
     for row in range(start_row, start_row + rows_to_draw):
         for col in range(start_col, start_col + cols_to_draw):
             x, y = col * TILE_SIZE, row * TILE_SIZE
             screen.blit(assets["grass"], (x - map_offset_x, y - map_offset_y))
-    
+
     for tree in tree_rects:
-        sx, sy = tree.x - map_offset_x, tree.y - map_offset_y
-        screen.blit(assets["tree"], (sx, sy))
-        
+        screen.blit(assets["tree"], (tree.x - map_offset_x - tree_size_diff // 6, tree.y - map_offset_y - tree_size_diff // 6))
+
+    for stone in stone_rects:
+        screen.blit(assets["stone_img"], (stone.x - map_offset_x, stone.y - map_offset_y))
+
     for fx, fy, idx in flower_tiles:
         screen.blit(assets["flowers"][idx], (fx - map_offset_x, fy - map_offset_y))
-        
+
     for lx, ly in leaf_tiles:
         screen.blit(assets["leaf"], (lx - map_offset_x, ly - map_offset_y))
-        
-    screen.blit(assets["house"], (house_list[0].x - map_offset_x, house_list[0].y - map_offset_y))
-    screen.blit(assets["house1"], (house_list[1].x - map_offset_x, house_list[1].y - map_offset_y))
-    
+
+    if house_list:
+        screen.blit(assets["house"], (house_list[0].x - map_offset_x, house_list[0].y - map_offset_y))
+        screen.blit(assets["house1"], (house_list[1].x - map_offset_x, house_list[1].y - map_offset_y))
+
 def draw_prompt(screen, font):
     """Draws the 'Press E' prompt when a player is near an interactive object."""
     show_e = False
-    player_rect_on_screen = player_pos.move(-map_offset_x, -map_offset_y)
-    
+    player_world_rect = get_player_world_rect()
+    # Check houses
     if current_level == "world":
-        if check_house_entry(player_rect_on_screen.inflate(20,20)) is not None:
+        if check_house_entry(player_world_rect.inflate(20, 20)) is not None:
             show_e = True
         else:
+            # Check trees
             for tree in tree_rects:
-                if player_rect_on_screen.colliderect(tree.move(-map_offset_x, -map_offset_y).inflate(20, 20)):
+                if player_world_rect.colliderect(tree.inflate(20, 20)):
                     show_e = True
                     break
-    elif current_level != "world" and pygame.Rect(WIDTH//2 - 40, HEIGHT - 100, 80, 80).colliderect(player_rect_on_screen.inflate(PLAYER_SIZE*2, PLAYER_SIZE*2)):
-        show_e = True
-    
-    if show_e and not is_chopping:
+            # Check stones
+            if not show_e:
+                for stone in stone_rects:
+                    if player_world_rect.colliderect(stone.inflate(20, 20)):
+                        show_e = True
+                        break
+    else:
+        door_zone = pygame.Rect(WIDTH // 2 - 40, HEIGHT - 100, 80, 80)
+        # player_pos is screen rect
+        if door_zone.colliderect(player_pos.inflate(PLAYER_SIZE * 2, PLAYER_SIZE * 2)):
+            show_e = True
+
+    if show_e and not is_chopping and not is_mining:
+        # show prompt above player (screen coords)
         text = font.render("Press E", True, (255, 255, 255))
-        text_rect = text.get_rect(centerx=player_rect_on_screen.centerx, centery=player_rect_on_screen.y - 30)
+        text_rect = text.get_rect(centerx=player_pos.centerx, centery=player_pos.y - 30)
         screen.blit(text, text_rect)
 
 def draw_inventory(screen, assets):
@@ -354,7 +446,7 @@ def draw_inventory(screen, assets):
             slot_rect = pygame.Rect(slot_x, slot_y, INVENTORY_SLOT_SIZE, INVENTORY_SLOT_SIZE)
             pygame.draw.rect(screen, (70, 70, 70), slot_rect)
             pygame.draw.rect(screen, (150, 150, 150), slot_rect, 2)
-            
+
             item = inventory[row][col]
             if item:
                 screen.blit(pygame.transform.scale(item.image, (INVENTORY_SLOT_SIZE, INVENTORY_SLOT_SIZE)), slot_rect)
@@ -364,7 +456,7 @@ def draw_inventory(screen, assets):
 
 def draw_crafting_panel(screen, assets, is_hovering):
     """Draws the crafting GUI with buttons for different items."""
-    global axe_button_rect, pickaxe_button_rect, other_button_rect
+    global axe_button_rect, pickaxe_button_rect
 
     panel_rect = pygame.Rect(CRAFTING_X, CRAFTING_Y, CRAFTING_PANEL_WIDTH, CRAFTING_PANEL_HEIGHT)
     pygame.draw.rect(screen, (101, 67, 33), panel_rect)
@@ -375,16 +467,15 @@ def draw_crafting_panel(screen, assets, is_hovering):
 
     button_width, button_height, gap = 180, 50, 20
     log_count = get_item_count("Log")
-    
+
     # Axe Button
     axe_button_rect = pygame.Rect(CRAFTING_X + gap, CRAFTING_Y + header_rect.height + gap, button_width, button_height)
     req_logs_axe = 5
-    
+
     # Pickaxe Button
     pickaxe_button_rect = pygame.Rect(CRAFTING_X + gap, axe_button_rect.bottom + gap, button_width, button_height)
     req_logs_pickaxe = 10
 
-    # Draw the buttons
     buttons = [
         (axe_button_rect, "axe", req_logs_axe, assets["axe_item"]),
         (pickaxe_button_rect, "pickaxe", req_logs_pickaxe, assets["pickaxe_item"])
@@ -392,7 +483,7 @@ def draw_crafting_panel(screen, assets, is_hovering):
 
     for rect, item_name, req_logs, item_obj in buttons:
         can_craft = log_count >= req_logs
-        
+
         if is_crafting and item_to_craft and item_to_craft.name.lower() == item_name:
             progress = (crafting_timer / CRAFTING_TIME_MS) * 100
             text_to_display = f"Crafting... {int(progress)}%"
@@ -409,7 +500,6 @@ def draw_crafting_panel(screen, assets, is_hovering):
         text_surface = assets["small_font"].render(text_to_display, True, (255, 255, 255))
         screen.blit(text_surface, text_surface.get_rect(center=rect.center))
 
-
 def draw_equipment_panel(screen, assets):
     """Draws the equipment GUI."""
     panel_rect = pygame.Rect(EQUIPMENT_X, EQUIPMENT_Y, EQUIPMENT_PANEL_WIDTH, EQUIPMENT_PANEL_HEIGHT)
@@ -423,7 +513,7 @@ def draw_equipment_panel(screen, assets):
     weapon_slot_rect = pygame.Rect(EQUIPMENT_X + EQUIPMENT_GAP, EQUIPMENT_Y + 40 + EQUIPMENT_GAP, EQUIPMENT_SLOT_SIZE, EQUIPMENT_SLOT_SIZE)
     pygame.draw.rect(screen, (70, 70, 70), weapon_slot_rect)
     pygame.draw.rect(screen, (150, 150, 150), weapon_slot_rect, 2)
-    
+
     equipped_weapon = equipment_slots.get("weapon")
     if equipped_weapon:
         screen.blit(pygame.transform.scale(equipped_weapon.image, (EQUIPMENT_SLOT_SIZE, EQUIPMENT_SLOT_SIZE)), weapon_slot_rect)
@@ -442,45 +532,66 @@ def draw_hud(screen, assets):
         screen.blit(icon, icon_rect)
         screen.blit(label_text, label_rect)
 
-
 # --- MAIN GAME LOGIC ---
 def handle_movement(keys):
-    """Handles player movement input and updates direction."""
+    """Handles player movement input and updates direction (returns dx, dy for world movement)."""
     global current_direction, last_direction
     dx = dy = 0
-    if keys[pygame.K_a]: dx -= PLAYER_SPEED; current_direction = "left"
-    if keys[pygame.K_d]: dx += PLAYER_SPEED; current_direction = "right"
-    if keys[pygame.K_w]: dy -= PLAYER_SPEED; current_direction = "up"
-    if keys[pygame.K_s]: dy += PLAYER_SPEED; current_direction = "down"
+    if keys[pygame.K_a]:
+        dx -= PLAYER_SPEED
+        current_direction = "left"
+    if keys[pygame.K_d]:
+        dx += PLAYER_SPEED
+        current_direction = "right"
+    if keys[pygame.K_w]:
+        dy -= PLAYER_SPEED
+        current_direction = "up"
+    if keys[pygame.K_s]:
+        dy += PLAYER_SPEED
+        current_direction = "down"
     if dx == 0 and dy == 0:
         current_direction = "idle"
     else:
         last_direction = current_direction
     return dx, dy
 
-def handle_collision(new_rect):
-    """Checks for collision with world objects."""
+def handle_collision(new_world_rect):
+    """Checks for collision with world objects; new_world_rect must be in world coords."""
     if current_level == "world":
-        return any(new_rect.colliderect(r) for r in tree_rects)
+        # collide with trees/houses
+        if any(new_world_rect.colliderect(r) for r in tree_rects):
+            return True
+        # collide with stones
+        if any(new_world_rect.colliderect(r) for r in stone_rects):
+            return True
+        return False
     else:
-        return any(new_rect.colliderect(r) for r in indoor_colliders)
+        return any(new_world_rect.colliderect(r) for r in indoor_colliders)
 
-def check_house_entry(rect):
-    """Checks if the player is near a house door."""
+def check_house_entry(world_rect):
+    """Checks if the player's world rect is near a house door (use world rect)."""
     for i, h in enumerate(house_list):
-        if rect.colliderect(h.inflate(20,20)):
+        if world_rect.colliderect(h.inflate(20, 20)):
             return i
     return None
 
-
 def main():
-    """The main game loop."""
-    global player_pos, map_offset_x, map_offset_y, current_level, current_house_index
+    """Main game loop."""
+    global map_offset_x, map_offset_y, current_level, current_house_index
     global player_frame_index, player_frame_timer, current_direction, last_direction
     global show_inventory, show_crafting, show_equipment
     global is_chopping, chopping_timer, chopping_target_tree, is_swinging
     global is_crafting, crafting_timer, item_to_craft
+    global is_mining, mining_timer, mining_target_stone
+    global player_pos, indoor_colliders
 
+    # Example house exits (unused directly but kept)
+    house_exits = {
+        "house1": (350, 420),
+        "house2": (1200, 750),
+    }
+
+    # --- Initialize ---
     screen, clock = init()
     assets = load_assets()
     player_frames = load_player_frames()
@@ -491,11 +602,11 @@ def main():
     while True:
         dt = clock.tick(60)
         current_time = pygame.time.get_ticks()
-        
-        # --- UI Hover State Check ---
+
+        # --- UI Hover State ---
         is_hovering = None
+        mouse_pos = pygame.mouse.get_pos()
         if show_crafting:
-            mouse_pos = pygame.mouse.get_pos()
             if axe_button_rect and axe_button_rect.collidepoint(mouse_pos):
                 is_hovering = "axe"
             elif pickaxe_button_rect and pickaxe_button_rect.collidepoint(mouse_pos):
@@ -506,33 +617,35 @@ def main():
             if event.type == pygame.QUIT:
                 pygame.quit()
                 sys.exit()
-            
+
             if event.type == pygame.KEYDOWN:
-                # Toggle UI panels with hotkeys
+                # Toggle UI panels
                 if event.key == pygame.K_i:
                     show_inventory = not show_inventory
-                    show_crafting = False
-                    show_equipment = False
-                elif event.key == pygame.K_c and not is_chopping and not is_crafting:
+                    show_crafting = show_equipment = False
+                elif event.key == pygame.K_c and not (is_chopping or is_crafting):
                     show_crafting = not show_crafting
-                    show_inventory = False
-                    show_equipment = False
-                elif event.key == pygame.K_r and not is_chopping and not is_crafting:
+                    show_inventory = show_equipment = False
+                elif event.key == pygame.K_r and not (is_chopping or is_crafting):
                     show_equipment = not show_equipment
-                    show_inventory = False
-                    show_crafting = False
-                
-                # Interact with the world (houses, trees)
-                if event.key == pygame.K_e and not any([show_inventory, show_crafting, show_equipment]):
+                    show_inventory = show_crafting = False
+
+                # --- Interact with World ---
+                player_world_rect = get_player_world_rect()
+                if event.key == pygame.K_e:
                     if current_level == "world":
+                        # --- PRIORITY 1: Enter House ---
                         house_index = check_house_entry(player_pos)
                         if house_index is not None:
                             current_level = "house"
                             current_house_index = house_index
-                            player_pos.x, player_pos.y = WIDTH // 2, HEIGHT // 2
+                            player_pos.x = WIDTH // 2
+                            player_pos.y = HEIGHT // 2
+                            setup_indoor_colliders()
                         else:
-                            for tree in tree_rects:
-                                if player_pos.colliderect(tree.inflate(20, 20)):
+                            # --- PRIORITY 2: Chop Trees ---
+                            for tree in list(tree_rects):
+                                if player_world_rect.colliderect(tree.inflate(20, 20)):
                                     if equipment_slots["weapon"] is None:
                                         print("Equip a tool to chop!")
                                     else:
@@ -541,15 +654,42 @@ def main():
                                         chopping_timer = 0
                                         current_direction = "idle"
                                     break
-                    elif current_level == "house":
-                        door_zone = pygame.Rect(WIDTH//2 - 40, HEIGHT - 100, 80, 80)
-                        if door_zone.colliderect(player_pos.inflate(PLAYER_SIZE*2, PLAYER_SIZE*2)):
+                            # --- PRIORITY 3: Mine Stones ---
+                            for stone in list(stone_rects):
+                                if player_world_rect.colliderect(stone.inflate(20, 20)):
+                                    if equipment_slots["weapon"] is None or equipment_slots["weapon"].name != "Pickaxe":
+                                        print("You need a Pickaxe to mine stone!")
+                                    else:
+                                        is_mining = True
+                                        mining_target_stone = stone
+                                        mining_timer = 0
+                                        current_direction = "idle"
+                                    break
+
+                            # Mining Stones
+                            for stone in list(stone_rects):
+                                if player_world_rect.colliderect(stone.inflate(20, 20)):
+                                    if equipment_slots["weapon"] is None or equipment_slots["weapon"].name != "Pickaxe":
+                                        print("You need a Pickaxe to mine stone!")
+                                    else:
+                                        is_mining = True
+                                        mining_target_stone = stone
+                                        mining_timer = 0
+                                        current_direction = "idle"
+                                    break
+                    else:
+                        # Inside house -> Exit
+                        door_zone = pygame.Rect(WIDTH // 2 - 40, HEIGHT - 100, 80, 80)
+                        if door_zone.colliderect(player_pos.inflate(PLAYER_SIZE * 2, PLAYER_SIZE * 2)):
                             current_level = "world"
                             exit_rect = house_list[current_house_index]
-                            player_pos.x, player_pos.y = exit_rect.x, exit_rect.y
+                            map_offset_x = player_pos.x - exit_rect.x
+                            map_offset_y = player_pos.y - exit_rect.y
                             current_house_index = None
 
+            # --- Mouse Button Handling (Crafting / Equipment / Inventory) ---
             if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+                # Crafting
                 if show_crafting and not is_crafting:
                     if axe_button_rect and axe_button_rect.collidepoint(event.pos):
                         if get_item_count("Log") >= 5:
@@ -569,12 +709,13 @@ def main():
                             print(f"Crafting a {item_to_craft.name}...")
                         else:
                             print("Not enough logs!")
-                
+                # Equipment
                 if show_equipment:
-                    weapon_slot_rect = pygame.Rect(EQUIPMENT_X + EQUIPMENT_GAP, EQUIPMENT_Y + 40 + EQUIPMENT_GAP, EQUIPMENT_SLOT_SIZE, EQUIPMENT_SLOT_SIZE)
+                    weapon_slot_rect = pygame.Rect(EQUIPMENT_X + EQUIPMENT_GAP, EQUIPMENT_Y + 40 + EQUIPMENT_GAP,
+                                                   EQUIPMENT_SLOT_SIZE, EQUIPMENT_SLOT_SIZE)
                     if weapon_slot_rect.collidepoint(event.pos):
                         unequip_item()
-
+                # Inventory
                 if show_inventory:
                     for row in range(4):
                         for col in range(4):
@@ -589,7 +730,6 @@ def main():
                                     break
 
         # --- Game State Updates ---
-        
         # Crafting
         if is_crafting:
             crafting_timer += dt
@@ -600,35 +740,47 @@ def main():
                 print(f"Crafting complete! {item_to_craft.name} added to inventory.")
                 item_to_craft = None
 
-        # Chopping 🪵
+        # Chopping
         if is_chopping:
             chopping_timer += dt
             if chopping_timer >= CHOPPING_DURATION:
                 is_chopping = False
                 chopping_timer = 0
                 if chopping_target_tree in tree_rects:
-                    tree_index = tree_rects.index(chopping_target_tree)
-                    tree_rects.pop(tree_index)
-                    tree_key = (chopping_target_tree.x, chopping_target_tree.y)
-                    chopped_trees[tree_key] = current_time + TREE_RESPAWN_TIME
+                    tree_rects.remove(chopping_target_tree)
+                    chopped_trees[(chopping_target_tree.x, chopping_target_tree.y)] = current_time + TREE_RESPAWN_TIME
                     add_item_to_inventory(assets["log_item"])
                     print("You chopped down the tree and got a log!")
                 chopping_target_tree = None
 
-        # Tree Respawn 🌳
-        trees_to_respawn = []
-        for tree_key, respawn_time in chopped_trees.items():
-            if current_time >= respawn_time:
-                trees_to_respawn.append(tree_key)
-        for tree_key in trees_to_respawn:
-            tree_rect = pygame.Rect(tree_key[0], tree_key[1], TILE_SIZE - 10, TILE_SIZE - 10)
-            tree_rects.append(tree_rect)
-            del chopped_trees[tree_key]
-            
-        # Player Animation
+        # Mining
+        if is_mining:
+            mining_timer += dt
+            if mining_timer >= MINING_DURATION:
+                is_mining = False
+                mining_timer = 0
+                if mining_target_stone in stone_rects:
+                    stone_rects.remove(mining_target_stone)
+                    chopped_stones[(mining_target_stone.x, mining_target_stone.y)] = current_time + STONE_RESPAWN_TIME
+                    add_item_to_inventory(assets["stone_item"])
+                    print("You mined the stone and got a stone!")
+                mining_target_stone = None
+
+        # Respawn trees
+        for tree_key, t in list(chopped_trees.items()):
+            if current_time >= t:
+                tree_rects.append(pygame.Rect(tree_key[0], tree_key[1], TILE_SIZE - 10, TILE_SIZE - 10))
+                del chopped_trees[tree_key]
+
+        # Respawn stones
+        for stone_key, t in list(chopped_stones.items()):
+            if current_time >= t:
+                stone_rects.append(pygame.Rect(stone_key[0], stone_key[1], TILE_SIZE // 2, TILE_SIZE // 2))
+                del chopped_stones[stone_key]
+
+        # --- Player Animation ---
         player_frame_timer += dt
         if is_chopping:
-            player_frame_delay = swing_delay
             if is_swinging:
                 if player_frame_timer >= swing_delay:
                     player_frame_index = (player_frame_index + 1) % len(chopping_frames[last_direction])
@@ -648,23 +800,25 @@ def main():
                 player_frame_index = 0
             else:
                 if player_frame_timer >= player_frame_delay:
-                    player_frame_index = (player_frame_index + 1) % len(player_frames[current_direction])
+                    player_frame_index = (player_frame_index + 1) % len(player_frames.get(current_direction, player_frames["idle"]))
                     player_frame_timer = 0
-                current_frame = player_frames[current_direction][player_frame_index]
+                current_frame = player_frames.get(current_direction, player_frames["idle"])[player_frame_index]
 
-        # Player Movement
-        if not any([show_inventory, show_crafting, show_equipment, is_chopping]):
+        # --- Player Movement ---
+        if not any([show_inventory, show_crafting, show_equipment, is_chopping, is_mining]):
             keys = pygame.key.get_pressed()
             dx, dy = handle_movement(keys)
             if dx != 0 or dy != 0:
-                # Construct player's world rect then test collision if the world were shifted by dx,dy
                 player_world_rect = get_player_world_rect()
                 new_world_rect = player_world_rect.move(dx, dy)
                 if not handle_collision(new_world_rect):
-                    # Move the world (map offsets) to achieve movement while player stays on screen
-                    map_offset_x += dx
-                    map_offset_y += dy
-        
+                    if current_level == "world":
+                        map_offset_x += dx
+                        map_offset_y += dy
+                    else:
+                        player_pos.x += dx
+                        player_pos.y += dy
+
         # --- Drawing ---
         screen.fill((0, 0, 0))
         if current_level == "world":
@@ -672,17 +826,26 @@ def main():
         else:
             screen.blit(assets["interiors"][current_house_index], (0, 0))
 
-        screen.blit(current_frame, (player_pos.x - map_offset_x, player_pos.y - map_offset_y))
+        # Draw player
+        if current_level == "world":
+            screen.blit(current_frame, (player_pos.x, player_pos.y))
+        else:
+            scaled_frame = pygame.transform.scale(current_frame, (PLAYER_SIZE * 4, PLAYER_SIZE * 4))
+            screen.blit(scaled_frame, (player_pos.x - scaled_frame.get_width() // 2,
+                                       player_pos.y - scaled_frame.get_height() // 2))
 
-        # Draw UI
+        # Action Progress Bars
         if is_chopping:
             progress = (chopping_timer / CHOPPING_DURATION) * 100
             progress_text = assets["small_font"].render(f"Chopping: {int(progress)}%", True, (255, 255, 255))
-            screen.blit(progress_text, (player_pos.x - map_offset_x - 10, player_pos.y - map_offset_y - 60))
+            screen.blit(progress_text, (player_pos.x - 10, player_pos.y - 60))
+        if is_mining:
+            progress = (mining_timer / MINING_DURATION) * 100
+            progress_text = assets["small_font"].render(f"Mining: {int(progress)}%", True, (255, 255, 255))
+            screen.blit(progress_text, (player_pos.x - 10, player_pos.y - 60))
 
         draw_prompt(screen, assets["font"])
         draw_hud(screen, assets)
-
         if show_inventory:
             draw_inventory(screen, assets)
         if show_crafting:
@@ -691,6 +854,7 @@ def main():
             draw_equipment_panel(screen, assets)
 
         pygame.display.flip()
+
 
 if __name__ == "__main__":
     main()
