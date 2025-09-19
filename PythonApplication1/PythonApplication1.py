@@ -1,6 +1,5 @@
 # -*- coding: utf-8 -*-
 
-from itertools import filterfalse
 import pygame
 import sys
 import os
@@ -46,20 +45,12 @@ INVENTORY_WIDTH = 4 * INVENTORY_SLOT_SIZE + 5 * INVENTORY_GAP
 INVENTORY_HEIGHT = 4 * INVENTORY_SLOT_SIZE + 5 * INVENTORY_GAP
 INVENTORY_X = (WIDTH - INVENTORY_WIDTH) // 2
 INVENTORY_Y = (HEIGHT - INVENTORY_HEIGHT) // 2
-show_inventory = False
-show_crafting = False 
-show_equipment = False 
 
 # Crafting GUI constants
 CRAFTING_PANEL_WIDTH = 420
 CRAFTING_PANEL_HEIGHT = 150
 CRAFTING_X = (WIDTH - CRAFTING_PANEL_WIDTH) // 2
 CRAFTING_Y = (HEIGHT - CRAFTING_PANEL_HEIGHT) // 2
-is_crafting_clicked = False
-click_timer = 0
-click_duration = 100
-is_crafting = False
-crafting_timer = 0
 
 # Equipment GUI constants
 EQUIPMENT_SLOT_SIZE = 40
@@ -120,10 +111,6 @@ def load_chopping_frames():
     chopping_frames["left"] = [pygame.transform.flip(frame, True, False) for frame in chopping_frames["right"]]
     chopping_frames["up"] = [pygame.transform.scale(sheet.subsurface(pygame.Rect(col * 32, 255, 32, 32)), (PLAYER_SIZE, PLAYER_SIZE)) for col in range(4)]
     chopping_frames["down"] = [pygame.transform.scale(sheet.subsurface(pygame.Rect(col * 32, 190, 32, 32)), (PLAYER_SIZE, PLAYER_SIZE)) for col in range(4)]
-    chopping_frames["idle_right"] = chopping_frames["right"][0]
-    chopping_frames["idle_left"] = chopping_frames["left"][0]
-    chopping_frames["idle_up"] = chopping_frames["up"][0]
-    chopping_frames["idle_down"] = chopping_frames["down"][0]
     return chopping_frames
 
 def load_assets():
@@ -247,7 +234,6 @@ def add_item_to_inventory(item_to_add):
                 new_item = Item(item_to_add.name, item_to_add.image, category=item_to_add.category)
                 inventory[row][col] = new_item
                 return True
-    
     return False
 
 def get_item_count(item_name):
@@ -268,10 +254,8 @@ def remove_item_from_inventory(item_name, quantity):
                 to_remove = min(slot.count, quantity - removed_count)
                 slot.count -= to_remove
                 removed_count += to_remove
-                
                 if slot.count <= 0:
                     inventory[row][col] = None
-                
                 if removed_count >= quantity:
                     return True
     return False
@@ -360,41 +344,12 @@ def draw_inventory(screen, assets):
                 screen.blit(item_image, slot_rect)
                 if item.count > 1:
                     count_text = assets["small_font"].render(str(item.count), True, (255, 255, 255))
-                    count_rect = count_text.get_rect(bottomright=slot_rect.bottomright)
-                    screen.blit(count_text, count_rect)
-
-def draw_inventory_icon(screen, assets):
-    backpack_icon = assets["backpack_icon"]
-    icon_rect = backpack_icon.get_rect(centerx=WIDTH - 40, top=10)
-    
-    label_text = assets["small_font"].render("[ i ]", True, (255, 255, 255))
-    label_rect = label_text.get_rect(centerx=icon_rect.centerx, top=icon_rect.bottom + 5)
-    
-    screen.blit(label_text, label_rect)
-    screen.blit(backpack_icon, icon_rect)
-
-def draw_crafting_icon(screen, assets):
-    crafting_icon = assets["crafting_icon"]
-    icon_rect = crafting_icon.get_rect(centerx=WIDTH - 80, top=10)
-    
-    label_text = assets["small_font"].render("[ c ]", True, (255, 255, 255))
-    label_rect = label_text.get_rect(centerx=icon_rect.centerx, top=icon_rect.bottom + 5)
-    
-    screen.blit(label_text, label_rect)
-    screen.blit(crafting_icon, icon_rect)
-
-def draw_equipment_icon(screen, assets):
-    equipment_icon = assets["equipment_icon"]
-    icon_rect = equipment_icon.get_rect(centerx=WIDTH - 120, top=10)
-    
-    label_text = assets["small_font"].render("[ r ]", True, (255, 255, 255))
-    label_rect = label_text.get_rect(centerx=icon_rect.centerx, top=icon_rect.bottom + 5)
-    
-    screen.blit(label_text, label_rect)
-    screen.blit(equipment_icon, icon_rect)
-
+                    screen.blit(count_text, count_text.get_rect(bottomright=slot_rect.bottomright))
 
 def draw_crafting_panel(screen, assets, is_hovering):
+    """Draws the crafting GUI with buttons for different items."""
+    global axe_button_rect, pickaxe_button_rect, other_button_rect
+
     panel_rect = pygame.Rect(CRAFTING_X, CRAFTING_Y, CRAFTING_PANEL_WIDTH, CRAFTING_PANEL_HEIGHT)
     pygame.draw.rect(screen, (101, 67, 33), panel_rect)
     
