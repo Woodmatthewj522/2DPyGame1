@@ -88,6 +88,7 @@ mining_target_stone = None
 # UI state
 show_inventory = False
 show_crafting = False
+show_alchemy = False
 show_equipment = False
 is_crafting = False
 crafting_timer = 0
@@ -110,6 +111,7 @@ leaf_tiles = []
 # Crafting button rects
 axe_button_rect = None
 pickaxe_button_rect = None
+alchemy_tab_rect = None
 
 # --- HELPERS FOR COORDINATES ---
 def get_player_world_rect():
@@ -504,7 +506,11 @@ def draw_inventory(screen, assets):
 
 def draw_crafting_panel(screen, assets, is_hovering):
     """Draws the crafting GUI with buttons for different items."""
-    global axe_button_rect, pickaxe_button_rect
+    global axe_button_rect, pickaxe_button_rect, alchemy_tab_rect
+
+    if show_alchemy:
+        draw_alchemy_panel(screen, assets)
+        return  # don’t draw regular crafting buttons
 
     panel_rect = pygame.Rect(CRAFTING_X, CRAFTING_Y, CRAFTING_PANEL_WIDTH, CRAFTING_PANEL_HEIGHT)
     pygame.draw.rect(screen, (101, 67, 33), panel_rect)
@@ -524,6 +530,14 @@ def draw_crafting_panel(screen, assets, is_hovering):
     pickaxe_button_rect = pygame.Rect(CRAFTING_X + gap, axe_button_rect.bottom + gap, button_width, button_height)
     req_logs_pickaxe = 10
 
+    # Alchemy Button
+    alchemy_tab_rect = pygame.Rect(CRAFTING_X + CRAFTING_PANEL_WIDTH - 120, CRAFTING_Y + 10, 100, 30)
+    pygame.draw.rect(screen, (80, 80, 150), alchemy_tab_rect)
+    alchemy_text = assets["small_font"].render("Alchemy", True, (255, 255, 255))
+    screen.blit(alchemy_text, alchemy_text.get_rect(center=alchemy_tab_rect.center))
+
+
+
     buttons = [
         (axe_button_rect, "axe", req_logs_axe, assets["axe_item"]),
         (pickaxe_button_rect, "pickaxe", req_logs_pickaxe, assets["pickaxe_item"])
@@ -531,7 +545,6 @@ def draw_crafting_panel(screen, assets, is_hovering):
 
     for rect, item_name, req_logs, item_obj in buttons:
         can_craft = log_count >= req_logs
-
         if is_crafting and item_to_craft and item_to_craft.name.lower() == item_name:
             progress = (crafting_timer / CRAFTING_TIME_MS) * 100
             text_to_display = f"Crafting... {int(progress)}%"
@@ -566,6 +579,20 @@ def draw_equipment_panel(screen, assets):
     equipped_weapon = equipment_slots.get("weapon")
     if equipped_weapon:
         screen.blit(pygame.transform.scale(equipped_weapon.image, (EQUIPMENT_SLOT_SIZE, EQUIPMENT_SLOT_SIZE)), weapon_slot_rect)
+
+
+def draw_alchemy_panel(screen, assets):
+    panel_rect = pygame.Rect(CRAFTING_X, CRAFTING_Y, CRAFTING_PANEL_WIDTH, CRAFTING_PANEL_HEIGHT)
+    pygame.draw.rect(screen, (70, 40, 90), panel_rect)  # purple-ish background
+    header_text = assets["small_font"].render("Alchemy", True, (255, 255, 255))
+    screen.blit(header_text, header_text.get_rect(centerx=panel_rect.centerx, top=CRAFTING_Y + 10))
+
+    # Example buttons inside alchemy
+    # You can expand this later with real potion recipes
+    potion_button_rect = pygame.Rect(CRAFTING_X + 20, CRAFTING_Y + 50, 150, 40)
+    pygame.draw.rect(screen, (100, 100, 200), potion_button_rect)
+    potion_text = assets["small_font"].render("Make Potion", True, (255, 255, 255))
+    screen.blit(potion_text, potion_text.get_rect(center=potion_button_rect.center))
 
 def draw_hud(screen, assets):
     """Draws the main HUD elements (icons)."""
@@ -685,9 +712,6 @@ def setup_colliders():
         pygame.Rect(WIDTH-10, 0, 10, HEIGHT)  # right wall
     ]
 
-# The rest of the functions are unchanged from the previous version,
-# so they are not included in this code block for brevity.
-
 # --- MAIN GAME LOGIC ---
 def main():
     """Main game loop."""
@@ -739,6 +763,7 @@ def main():
                 elif event.key == pygame.K_c and not (is_chopping or is_crafting):
                     show_crafting = not show_crafting
                     show_inventory = show_equipment = False
+
                 elif event.key == pygame.K_r and not (is_chopping or is_crafting):
                     show_equipment = not show_equipment
                     show_inventory = show_crafting = False
@@ -840,6 +865,10 @@ def main():
                             print(f"Crafting a {item_to_craft.name}...")
                         else:
                             print("Not enough logs!")
+                    if event.type == pygame.MOUSEBUTTONDOWN:
+                        if event.button == 1:  # left click
+                            if alchemy_tab_rect and alchemy_tab_rect.collidepoint(mouse_pos):
+                                show_alchemy = True
                 # Equipment
                 if show_equipment:
                     weapon_slot_rect = pygame.Rect(EQUIPMENT_X + EQUIPMENT_GAP, EQUIPMENT_Y + 40 + EQUIPMENT_GAP,
@@ -933,10 +962,11 @@ def main():
                 stone_rects.append(stone_rect)
                 del chopped_stones[stone_rect_tuple]
 
-# Player movement
+        # --- Player Movement ---
         if not (show_inventory or show_crafting or show_equipment or is_chopping or is_mining):
             keys = pygame.key.get_pressed()
             dx, dy = handle_movement(keys)
+            
             if current_level == "world":
                 new_player_world_rect = get_player_world_rect().move(dx, dy)
                 if not handle_collision(new_player_world_rect):
