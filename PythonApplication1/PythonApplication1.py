@@ -1,7 +1,4 @@
 ﻿# -*- coding: utf-8 -*-
-
-import pygame
-import sys
 import os
 import random
 
@@ -41,6 +38,9 @@ EQUIPMENT_PANEL_HEIGHT = EQUIPMENT_ROWS * EQUIPMENT_SLOT_SIZE + (EQUIPMENT_ROWS 
 EQUIPMENT_X = (WIDTH - EQUIPMENT_PANEL_WIDTH) // 2
 EQUIPMENT_Y = (HEIGHT - EQUIPMENT_PANEL_HEIGHT) // 2
 
+# Mining constants
+MINING_DURATION = 2000  # ms
+STONE_RESPAWN_TIME = 90000  # ms
 
 # --- ITEM CLASS ---
 class Item:
@@ -49,7 +49,6 @@ class Item:
         self.image = image
         self.count = count
         self.category = category
-
 
 # --- GAME STATE GLOBALS ---
 player_pos = pygame.Rect(WIDTH // 2, HEIGHT // 2, PLAYER_SIZE, PLAYER_SIZE)
@@ -88,7 +87,6 @@ house_list = []
 indoor_colliders = []
 flower_tiles = []
 leaf_tiles = []
-chopped_trees = {}
 
 # Crafting button rects
 axe_button_rect = None
@@ -658,10 +656,12 @@ def main():
         if not any([show_inventory, show_crafting, show_equipment, is_chopping]):
             keys = pygame.key.get_pressed()
             dx, dy = handle_movement(keys)
-            new_rect = player_pos.move(dx, dy)
-            if not handle_collision(new_rect):
-                player_pos.x, player_pos.y = new_rect.x, new_rect.y
-                if current_level == "world":
+            if dx != 0 or dy != 0:
+                # Construct player's world rect then test collision if the world were shifted by dx,dy
+                player_world_rect = get_player_world_rect()
+                new_world_rect = player_world_rect.move(dx, dy)
+                if not handle_collision(new_world_rect):
+                    # Move the world (map offsets) to achieve movement while player stays on screen
                     map_offset_x += dx
                     map_offset_y += dy
         
