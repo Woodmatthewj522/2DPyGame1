@@ -1,6 +1,7 @@
 import pygame
 import sys
 import os
+import random
 
 # --- CONSTANTS ---
 WIDTH, HEIGHT = 800, 600
@@ -21,22 +22,35 @@ map_offset_x = map_offset_y = 0
 current_level = "world"
 current_house_index = None
 
-# --- COLLISION OBJECTS ---
 tree_rects = []
 house_list = []
 indoor_rects = []
 door_zone = pygame.Rect(WIDTH//2 - 40, HEIGHT - 100, 80, 80)
+flower_tiles = []
+leaf_tiles = []
 
 # --- INIT ---
 def init():
     pygame.init()
     screen = pygame.display.set_mode((WIDTH, HEIGHT))
-    pygame.display.set_caption("2D Game with Player + Tree Border + Two Houses")
+    pygame.display.set_caption("2D Game with Flowers and Grass Leaves")
     return screen, pygame.time.Clock()
 
 # --- LOAD ASSETS ---
 def load_assets():
     tile_folder = "Tiles"
+    sheet = pygame.image.load("OutdoorStuff.png").convert_alpha()  # Replace with actual filename
+
+    # Slice flowers (red, yellow only)
+    flower_positions = [(0, 144), (16, 144)]  # Red, Yellow
+    flowers = [
+        pygame.transform.scale(sheet.subsurface(pygame.Rect(x, y, 16, 16)), (30, 30))
+        for (x, y) in flower_positions
+    ]
+
+    # Slice grass leaf from top-left corner
+    leaf = pygame.transform.scale(sheet.subsurface(pygame.Rect(0, 0, 16, 16)), (25, 25))
+
     assets = {
         "grass": pygame.transform.scale(pygame.image.load(os.path.join(tile_folder, "grass_middle.png")).convert_alpha(), (TILE_SIZE, TILE_SIZE)),
         "tree": pygame.transform.scale(pygame.image.load(os.path.join(tile_folder, "tree.png")).convert_alpha(), (TILE_SIZE, TILE_SIZE)),
@@ -46,6 +60,8 @@ def load_assets():
             pygame.transform.scale(pygame.image.load("indoor2.png").convert_alpha(), (WIDTH, HEIGHT)),
             pygame.transform.scale(pygame.image.load("indoor3.png").convert_alpha(), (WIDTH, HEIGHT))
         ],
+        "flowers": flowers,
+        "leaf": leaf,
         "font": pygame.font.SysFont(None, 36)
     }
     return assets
@@ -64,12 +80,20 @@ def load_player_frames():
 
 # --- SETUP COLLIDERS ---
 def setup_colliders():
-    global tree_rects, house_list, indoor_rects
+    global tree_rects, house_list, indoor_rects, flower_tiles, leaf_tiles
     map_cols, map_rows = 50, 50
     for row in range(map_rows):
         for col in range(map_cols):
+            x = col * TILE_SIZE
+            y = row * TILE_SIZE
             if row < BORDER_THICKNESS or row >= map_rows - BORDER_THICKNESS or col < BORDER_THICKNESS or col >= map_cols - BORDER_THICKNESS:
-                tree_rects.append(pygame.Rect(col*TILE_SIZE, row*TILE_SIZE, TILE_SIZE, TILE_SIZE))
+                tree_rects.append(pygame.Rect(x + 5, y + 5, TILE_SIZE - 10, TILE_SIZE - 10))
+            elif random.random() < 0.02:
+                tree_rects.append(pygame.Rect(x + 5, y + 5, TILE_SIZE - 10, TILE_SIZE - 10))
+            elif random.random() < 0.03:
+                flower_tiles.append((x + 10, y + 10, random.randint(0, 1)))  # Red or Yellow
+            elif random.random() < 0.12:
+                leaf_tiles.append((x + 12, y + 12))
 
     house_rect = pygame.Rect(player_pos.x + 100, player_pos.y, TILE_SIZE*2, TILE_SIZE*2)
     house1_rect = pygame.Rect(house_rect.x + 200, house_rect.y, TILE_SIZE*2, TILE_SIZE*2)
@@ -126,11 +150,25 @@ def draw_world(screen, assets):
     rows_to_draw = (HEIGHT // TILE_SIZE) + 3
     for row in range(start_row, start_row + rows_to_draw):
         for col in range(start_col, start_col + cols_to_draw):
-            sx = col*TILE_SIZE - map_offset_x
-            sy = row*TILE_SIZE - map_offset_y
+            x = col * TILE_SIZE
+            y = row * TILE_SIZE
+            sx = x - map_offset_x
+            sy = y - map_offset_y
             screen.blit(assets["grass"], (sx, sy))
-            if row < BORDER_THICKNESS or row >= 50 - BORDER_THICKNESS or col < BORDER_THICKNESS or col >= 50 - BORDER_THICKNESS:
+            tile_rect = pygame.Rect(x, y, TILE_SIZE, TILE_SIZE)
+            if any(tile_rect.colliderect(tree) for tree in tree_rects):
                 screen.blit(assets["tree"], (sx, sy))
+
+    for fx, fy, flower_index in flower_tiles:
+        sx = fx - map_offset_x
+        sy = fy - map_offset_y
+        screen.blit(assets["flowers"][flower_index], (sx, sy))
+
+    for lx, ly in leaf_tiles:
+        sx = lx - map_offset_x
+        sy = ly - map_offset_y
+        screen.blit(assets["leaf"], (sx, sy))
+
     screen.blit(assets["house"], (house_list[0].x - map_offset_x, house_list[0].y - map_offset_y))
     screen.blit(assets["house1"], (house_list[1].x - map_offset_x, house_list[1].y - map_offset_y))
 
@@ -145,7 +183,6 @@ def draw_prompt(screen, font):
     if show_e:
         text = font.render("Press E", True, (255, 255, 255))
         screen.blit(text, (player_pos.x - map_offset_x + 10, player_pos.y - map_offset_y - 40))
-
 # --- MAIN LOOP ---
 def main():
     global player_pos, player_frame_index, player_frame_timer, current_level, current_house_index, map_offset_x, map_offset_y
@@ -169,15 +206,13 @@ def main():
             player_pos = new_rect
 
         if current_level == "world":
-            map_offset_x = player_pos.x - WIDTH//2 + PLAYER_SIZE//2
-            map_offset_y = player_pos.y - HEIGHT//2 + PLAYER_SIZE//2
-            map_offset_x = max(0, min(map_offset_x, 50*TILE_SIZE - WIDTH))
-            map_offset_y = max(0, min(map_offset_y, 50*TILE_SIZE - HEIGHT))
-
+            map_offset_x = player_pos.x - WIDTH // 2 + PLAYER_SIZE // 2
+            map_offset_y = player_pos.y - HEIGHT // 2 + PLAYER_SIZE // 2
+            map_offset_x = max(0, min(map_offset_x, 50 * TILE_SIZE - WIDTH))
+            map_offset_y = max(0, min(map_offset_y, 50 * TILE_SIZE - HEIGHT))
         else:
             map_offset_x = map_offset_y = 0
 
-        # --- ANIMATION ---
         moving = dx != 0 or dy != 0
         if moving:
             player_frame_timer += dt
@@ -196,7 +231,7 @@ def main():
         if current_level == "world" and keys[pygame.K_e]:
             house_index = check_house_entry(player_pos)
             if house_index is not None:
-                current_level = f"house{house_index+1}"
+                current_level = f"house{house_index + 1}"
                 current_house_index = house_index
                 player_pos.x = WIDTH // 2
                 player_pos.y = HEIGHT // 2
