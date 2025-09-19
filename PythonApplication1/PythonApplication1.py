@@ -14,8 +14,8 @@ COLS = 4
 BORDER_THICKNESS = 6
 CRAFTING_TIME_MS = 3000
 ICON_SIZE = 30
-TREE_RESPAWN_TIME = 120000
 CHOPPING_DURATION = 3000
+RESPAWN_TIME = 1500
 
 # Inventory GUI constants
 INVENTORY_SLOT_SIZE = 40
@@ -43,7 +43,6 @@ EQUIPMENT_Y = (HEIGHT - EQUIPMENT_PANEL_HEIGHT) // 2
 
 # Mining constants
 MINING_DURATION = 2000  # ms
-STONE_RESPAWN_TIME = 90000  # ms
 
 # --- ITEM CLASS ---
 class Item:
@@ -303,7 +302,7 @@ def setup_colliders():
 
 def give_starting_items(assets):
     """Adds initial items to the inventory."""
-    for _ in range(5):
+    for _ in range(10):
         add_item_to_inventory(assets["log_item"])
     add_item_to_inventory(assets["axe_item"])
 
@@ -663,7 +662,9 @@ def main():
     chopping_frames = load_chopping_frames()
     setup_colliders()
     give_starting_items(assets)
-    
+    HOUSE_SPAWN_OFFSET_X = -73
+    HOUSE_SPAWN_OFFSET_Y = -52  
+
     # Store a larger player size for indoors
     PLAYER_SIZE_INDOOR = 80
     
@@ -736,18 +737,31 @@ def main():
                         # Inside house -> Exit
                         door_zone = pygame.Rect(WIDTH // 2 - 40, HEIGHT - 100, 80, 80)
                         if door_zone.colliderect(player_pos.inflate(PLAYER_SIZE_INDOOR * 2, PLAYER_SIZE_INDOOR * 2)):
+                            # Switch back to world
                             current_level = "world"
                             player_pos.size = (PLAYER_SIZE, PLAYER_SIZE)
-    
+
+                            # Offsets to spawn slightly left and higher in front of the house
+                            HOUSE_SPAWN_OFFSET_X = -20
+                            HOUSE_SPAWN_OFFSET_Y = 20
+
+                            # Get the house rect in world coordinates
                             exit_rect = house_list[current_house_index]
-                            player_pos.centerx = exit_rect.centerx
-                            player_pos.top = exit_rect.bottom + 5
 
-                            # Update world offset
-                            map_offset_x = player_pos.x - WIDTH // 2
-                            map_offset_y = player_pos.y - HEIGHT // 2
+                            # Compute the desired player world position
+                            player_world_x = exit_rect.centerx + HOUSE_SPAWN_OFFSET_X
+                            player_world_y = exit_rect.bottom + HOUSE_SPAWN_OFFSET_Y
 
+                            # Update map offsets so player appears centered on screen
+                            map_offset_x = player_world_x - WIDTH // 2
+                            map_offset_y = player_world_y - HEIGHT // 2
+
+                            # Keep the player rect centered on the screen
+                            player_pos.center = (WIDTH // 2, HEIGHT // 2)
+
+                            # Clear current house index
                             current_house_index = None
+
 
     
             # --- Mouse Button Handling (Crafting / Equipment / Inventory) ---
@@ -850,18 +864,18 @@ def main():
                 mining_timer = 0
                 mining_target_stone = None
                 current_direction = "idle"
-
-        # Respawn logic
+       
+        #RESPAWN LOGIC
         # Fix: Convert keys back to Rects for collision checking
         for tree_rect_tuple, time_chopped in list(chopped_trees.items()):
             tree_rect = pygame.Rect(tree_rect_tuple)
-            if current_time - time_chopped > TREE_RESPAWN_TIME:
+            if current_time - time_chopped > RESPAWN_TIME:
                 tree_rects.append(tree_rect)
                 del chopped_trees[tree_rect_tuple]
 
         for stone_rect_tuple, time_mined in list(chopped_stones.items()):
             stone_rect = pygame.Rect(stone_rect_tuple)
-            if current_time - time_mined > STONE_RESPAWN_TIME:
+            if current_time - time_mined > RESPAWN_TIME:
                 stone_rects.append(stone_rect)
                 del chopped_stones[stone_rect_tuple]
 
