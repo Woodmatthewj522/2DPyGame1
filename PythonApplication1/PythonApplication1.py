@@ -735,12 +735,10 @@ def main():
                     else:
                         # Inside house -> Exit
                         door_zone = pygame.Rect(WIDTH // 2 - 40, HEIGHT - 100, 80, 80)
-                        # Check if the player is in the door zone
                         if door_zone.colliderect(player_pos.inflate(PLAYER_SIZE_INDOOR * 2, PLAYER_SIZE_INDOOR * 2)):
                             current_level = "world"
                             player_pos.size = (PLAYER_SIZE, PLAYER_SIZE)
     
-                            # Spawn in front of the house
                             exit_rect = house_list[current_house_index]
                             player_pos.centerx = exit_rect.centerx
                             player_pos.top = exit_rect.bottom + 5
