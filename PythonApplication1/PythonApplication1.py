@@ -1,8 +1,9 @@
-﻿# -*- coding: utf-8 -*-
-from code import interact
+﻿               
+## -*- coding: utf-8 -*-
 import os
 import random
 import sys
+import math
 import pygame, json, sys
 
 
@@ -16,7 +17,11 @@ BORDER_THICKNESS = 6
 CRAFTING_TIME_MS = 3000
 ICON_SIZE = 30
 CHOPPING_DURATION = 3000
-RESPAWN_TIME = 1500
+RESPAWN_TIME = 120000 # 2 mins
+# Marcus NPC position and size
+marcus_pos = pygame.Rect(500, 395, 32, 48)  # x, y, width, height
+npc_rect = marcus_pos  # optional: keep npc_rect for dialog checks
+
 # Player constants
 PLAYER_SIZE = 40
 PLAYER_SIZE_INDOOR = 80
@@ -88,11 +93,21 @@ mining_target_stone = None
 # UI state
 show_inventory = False
 show_crafting = False
-show_alchemy = False
 show_equipment = False
 is_crafting = False
 crafting_timer = 0
 item_to_craft = None
+crafting_tab = "smithing"  # Track which crafting tab is active
+
+# NPC and Quest state
+show_npc_dialog = False
+npc_quest_active = False
+npc_quest_completed = False
+potions_needed = 3
+potions_delivered = 0
+npc_idle_timer = 0
+npc_idle_offset_y = 0
+npc_idle_direction = 1  # 1 for up, -1 for down
 
 # Game objects
 inventory = [[None for _ in range(4)] for _ in range(4)]
@@ -106,11 +121,14 @@ picked_flowers = {}
 indoor_colliders = []
 flower_tiles = []
 leaf_tiles = []
-
+npc_rect = None
+gold_coins = []
 
 # Crafting button rects
 axe_button_rect = None
 pickaxe_button_rect = None
+potion_button_rect = None
+smithing_tab_rect = None
 alchemy_tab_rect = None
 
 # --- HELPERS FOR COORDINATES ---
@@ -168,10 +186,22 @@ def load_assets():
     leaf_image = pygame.transform.scale(sheet.subsurface(pygame.Rect(0, 0, 16, 16)), (25, 25))
     log_image_rect = pygame.Rect(4, 110, 24, 24)
     log_image = pygame.transform.scale(sheet.subsurface(log_image_rect), (TILE_SIZE, TILE_SIZE))
-    potion_image = pygame.Surface((TILE_SIZE, TILE_SIZE))
-    potion_image.fill((150, 0, 150))
+    
+    # Load potion image with fallback
+    try:
+        potion_image = pygame.transform.scale(pygame.image.load("PotionR.png").convert_alpha(), (TILE_SIZE, TILE_SIZE))
+    except pygame.error:
+        potion_image = pygame.Surface((TILE_SIZE, TILE_SIZE))
+        potion_image.fill((150, 0, 150))
+    
     potion_item = Item("Potion", potion_image)
-
+    try:
+        coin_image = pygame.transform.scale(pygame.image.load("Coin.png").convert_alpha(), (TILE_SIZE, TILE_SIZE))
+    except pygame.error:
+        coin_image = pygame.Surface((TILE_SIZE, TILE_SIZE))
+        coin_image.fill((150, 0, 150))
+    
+    potion_item = Item("Potion", potion_image)
     # Load UI icons
     backpack_icon = pygame.transform.scale(pygame.image.load("bag.png").convert_alpha(), (ICON_SIZE, ICON_SIZE))
     crafting_icon = pygame.transform.scale(pygame.image.load("craft.png").convert_alpha(), (ICON_SIZE, ICON_SIZE))
@@ -193,13 +223,25 @@ def load_assets():
     except pygame.error:
         stone_image = pygame.Surface((TILE_SIZE, TILE_SIZE)); stone_image.fill((150, 150, 150))
 
+    # Load NPC image from sprite sheet with fallback
+    try:
+        soldier_sheet = pygame.image.load("soldier.png").convert_alpha()
+        # For a 600x100 sprite sheet, each frame is 100x100 pixels
+        # Extract the first frame (idle pose) and scale it up 4x
+        frame_width = 100
+        frame_height = 100
+        npc_image = pygame.transform.scale(soldier_sheet.subsurface(pygame.Rect(0, 0, frame_width, frame_height)), (PLAYER_SIZE * 4, PLAYER_SIZE * 4))
+    except:
+        npc_image = pygame.Surface((PLAYER_SIZE * 4, PLAYER_SIZE * 4))
+        npc_image.fill((255, 255, 0))  # Yellow placeholder
+
     # Define Item objects
     log_item = Item("Log", log_image)
     axe_item = Item("Axe", axe_image, category="Weapon")
     pickaxe_item = Item("Pickaxe", pickaxe_image, category="Weapon")
     stone_item = Item("Stone", stone_image)
     flower_item = Item("Flower", flower_images[0])
-    
+    coin_item = Item("Coin", coin_image)
     assets = {
         "grass": grass_image,
         "tree": tree_image,
@@ -223,23 +265,10 @@ def load_assets():
         "stone_img": stone_image,
         "flower_item": flower_item,
         "potion_item": potion_item,
+        "npc_image": npc_image,
+        "coin_item": coin_item,
     }
     return assets
-
-#MAP SWITCHING
-def enter_house():
-    global current_map, colliders
-    current_map = "house1"
-    colliders = load_colliders(current_map)
-    # safe indoor spawn
-    player.x, player.y = 80, 240
-
-def exit_house():
-    global current_map, colliders
-    current_map = "outdoors"
-    colliders = load_colliders(current_map)
-    # safe outdoor spawn
-    player.x, player.y = 120, 120
 
 # --- Indoor Colliders (adjustable!) ---
 # Define each wall or obstacle as (x, y, width, height)
@@ -266,18 +295,12 @@ def setup_indoor_colliders():
 # --- SETUP COLLIDERS AND WORLD ---
 def setup_colliders():
     """Generates the world colliders for the current level."""
-    global tree_rects, house_list, indoor_colliders, flower_tiles, leaf_tiles, stone_rects
+    global tree_rects, house_list, indoor_colliders, flower_tiles, leaf_tiles, stone_rects, npc_rect
     tree_rects.clear()
     flower_tiles.clear()
     leaf_tiles.clear()
     house_list.clear()
     stone_rects.clear()
-
-    pygame.init()
-    screen = pygame.display.set_mode((640, 480))
-    pygame.display.set_caption("Indoor/Outdoor Colliders")
-    clock = pygame.time.Clock()
-
 
     player_world_rect = get_player_world_rect()
     map_cols, map_rows = 50, 50
@@ -308,17 +331,26 @@ def setup_colliders():
     tree_rects.extend([house_rect_1, house_rect_2])
     house_list.extend([house_rect_1, house_rect_2])
 
+    # Place NPC near the first house (bigger collision rect for scaled up soldier)
+    npc_rect = pygame.Rect(house_rect_1.x - 60, house_rect_1.y + 30, PLAYER_SIZE * 4, PLAYER_SIZE * 4)
+
     indoor_colliders[:] = [
-        pygame.Rect(0, 0, WIDTH, 10),        # top wall
-        pygame.Rect(0, HEIGHT-10, WIDTH, 10),  # bottom wall
+        pygame.Rect(0, 0, WIDTH, 100),     # top wall
+        pygame.Rect(0, HEIGHT-10, WIDTH, 10), # bottom wall
         pygame.Rect(0, 0, 10, HEIGHT),       # left wall
         pygame.Rect(WIDTH-10, 0, 10, HEIGHT)  # right wall
     ]
+def draw_player_coordinates(screen, font):
+    """Draws the player’s current world coordinates in the top-left corner."""
+    player_rect = get_player_world_rect()  # get world coordinates
+    coord_text = f"Player: ({player_rect.x}, {player_rect.y})"
+    text_surf = font.render(coord_text, True, (255, 255, 255))
+    screen.blit(text_surf, (10, 10))  # 10 pixels from top-left corner
 
 def give_starting_items(assets):
     """Adds initial items to the inventory."""
     for _ in range(10):
-        add_item_to_inventory(assets["log_item"])
+        add_item_to_inventory(assets["potion_item"])
     add_item_to_inventory(assets["axe_item"])
 
 # --- INVENTORY/CRAFTING/EQUIPMENT LOGIC ---
@@ -417,6 +449,13 @@ def draw_world(screen, assets):
     if house_list:
         screen.blit(assets["house"], (house_list[0].x - map_offset_x, house_list[0].y - map_offset_y))
         screen.blit(assets["house1"], (house_list[1].x - map_offset_x, house_list[1].y - map_offset_y))
+
+    # Draw NPC with idle animation
+    if npc_rect:
+        # Calculate idle animation position
+        animated_y = npc_rect.y + npc_idle_offset_y
+        screen.blit(assets["npc_image"], (npc_rect.x - map_offset_x, animated_y - map_offset_y))
+
 def draw_tooltip(screen, font, text, pos):
     padding = 6
     text_surface = font.render(text, True, (255, 255, 255))
@@ -431,15 +470,69 @@ def draw_tooltip(screen, font, text, pos):
     screen.blit(bg_surf, (rect.x - padding, rect.y - padding))
     screen.blit(text_surface, rect)
 
+def draw_npc_dialog(screen, assets):
+    """Draws the NPC dialog box for Soldier Marcus."""
+    if not show_npc_dialog:
+        return
+
+    # Dialog box
+    dialog_width = 500
+    dialog_height = 150
+    dialog_x = (WIDTH - dialog_width) // 2
+    dialog_y = HEIGHT - dialog_height - 20
+    dialog_rect = pygame.Rect(dialog_x, dialog_y, dialog_width, dialog_height)
+    
+    pygame.draw.rect(screen, (40, 40, 40), dialog_rect)
+    pygame.draw.rect(screen, (255, 255, 255), dialog_rect, 3)
+
+    # NPC name
+    name_text = assets["small_font"].render("Soldier Marcus", True, (255, 215, 0))
+    screen.blit(name_text, (dialog_x + 10, dialog_y + 5))
+
+    # Dialog lines based on quest state
+    if not npc_quest_active and not npc_quest_completed:
+        dialog_lines = [
+            f"Greetings, Traveler! I'm in need of healing potions. Could ",
+            f"you brew {potions_needed} potions for us? I'd be grateful!'",
+            "Press [SPACE] to accept the quest, or [ESC] to decline."
+        ]
+    elif npc_quest_active:
+        potions_current = get_item_count("Potion")
+        if potions_current >= potions_needed:
+            dialog_lines = [
+                f"Excellent! You have {potions_current} potions!",
+                f"Press [SPACE] to deliver {potions_needed} potions and complete the quest."
+            ]
+        else:
+            dialog_lines = [
+                f"You currently have {potions_current}/{potions_needed} potions.",
+                "Return when you have brewed enough for my unit!",
+                "Press [ESC] to close."
+            ]
+    elif npc_quest_completed:  # Quest completed
+        dialog_lines = [
+            "Thank you for the potions! My unit is ready for battle!",
+            "I gave you your reward, 10 coins.",
+            "I have a friend down south that could use your help too.",
+            "Press [ESC] to close."
+        ]
+
+    # Draw dialog lines
+    y_offset = 35
+    for line in dialog_lines:
+        line_text = assets["small_font"].render(line, True, (255, 255, 255))
+        screen.blit(line_text, (dialog_x + 10, dialog_y + y_offset))
+        y_offset += 25
+
 def draw_tooltip_for_nearby_objects(screen, font):
-    """Draw a tooltip if the player is near a house, or if the mouse is over interactive objects."""
+    """Draw a tooltip for interactive objects: hover-based for NPCs, flowers, trees, stones; proximity-based for houses/exits."""
     tooltip_text = None
     tooltip_pos = None
     mouse_pos = pygame.mouse.get_pos()
     player_world_rect = get_player_world_rect()
 
     if current_level == "world":
-        # --- Houses: always show tooltip if near ---
+        # --- Houses: show tooltip if near the player ---
         house_index = check_house_entry(player_world_rect)
         if house_index is not None:
             house_screen = world_to_screen_rect(house_list[house_index])
@@ -473,13 +566,26 @@ def draw_tooltip_for_nearby_objects(screen, font):
                     tooltip_pos = (stone_screen.x, stone_screen.y)
                     break
 
+        # --- Marcus: show only on mouse hover ---
+        if tooltip_text is None and marcus_pos:
+            marcus_screen = pygame.Rect(
+                marcus_pos.x - map_offset_x,
+                marcus_pos.y - map_offset_y + npc_idle_offset_y,
+                marcus_pos.width,
+                marcus_pos.height
+            )
+            if marcus_screen.collidepoint(mouse_pos):
+                tooltip_text = "Marcus"
+                tooltip_pos = (marcus_screen.x, marcus_screen.y)
+
     else:
-        # Inside house -> Exit door, always show if near
+        # --- Inside house: Exit door tooltip if near ---
         door_zone = pygame.Rect(WIDTH // 2 - 40, HEIGHT - 100, 80, 80)
         if player_pos.colliderect(door_zone):
             tooltip_text = "Exit [e]"
             tooltip_pos = door_zone.topleft
 
+    # --- Draw the tooltip if we have text and position ---
     if tooltip_text and tooltip_pos:
         draw_tooltip(screen, font, tooltip_text, tooltip_pos)
 
@@ -509,34 +615,65 @@ def draw_inventory(screen, assets):
                     screen.blit(count_text, count_text.get_rect(bottomright=slot_rect.bottomright))
 
 def draw_crafting_panel(screen, assets, is_hovering):
-    """Draws the crafting GUI with buttons for different items."""
-    global axe_button_rect, pickaxe_button_rect, alchemy_tab_rect
+    """Draws the crafting GUI with tabs for smithing and alchemy."""
+    global axe_button_rect, pickaxe_button_rect, alchemy_tab_rect, smithing_tab_rect
 
     panel_rect = pygame.Rect(CRAFTING_X, CRAFTING_Y, CRAFTING_PANEL_WIDTH, CRAFTING_PANEL_HEIGHT)
     pygame.draw.rect(screen, (101, 67, 33), panel_rect)
 
-    header_rect = pygame.Rect(CRAFTING_X, CRAFTING_Y, CRAFTING_PANEL_WIDTH, 40)
+    # Header at the very top with more space
+    header_rect = pygame.Rect(CRAFTING_X, CRAFTING_Y, CRAFTING_PANEL_WIDTH, 35)
     pygame.draw.rect(screen, (50, 33, 16), header_rect)
     header_text = assets["small_font"].render("Crafting", True, (255, 255, 255))
-    screen.blit(header_text, header_text.get_rect(centerx=header_rect.centerx, top=CRAFTING_Y + 10))
+    screen.blit(header_text, header_text.get_rect(centerx=header_rect.centerx, centery=header_rect.centery))
 
+    # Tab buttons positioned below header with proper spacing
+    tab_width = 90
+    tab_height = 25
+    tab_y = CRAFTING_Y + 40  # Start tabs below header
+    tab_spacing = 10
+    
+    smithing_tab_rect = pygame.Rect(CRAFTING_X + tab_spacing, tab_y, tab_width, tab_height)
+    alchemy_tab_rect = pygame.Rect(CRAFTING_X + tab_spacing + tab_width + 5, tab_y, tab_width, tab_height)
+
+    # Draw smithing tab
+    smithing_color = (80, 150, 80) if crafting_tab == "smithing" else (60, 60, 60)
+    pygame.draw.rect(screen, smithing_color, smithing_tab_rect)
+    pygame.draw.rect(screen, (255, 255, 255), smithing_tab_rect, 2)
+    smithing_text = assets["small_font"].render("Smithing", True, (255, 255, 255))
+    screen.blit(smithing_text, smithing_text.get_rect(center=smithing_tab_rect.center))
+
+    # Draw alchemy tab
+    alchemy_color = (80, 80, 150) if crafting_tab == "alchemy" else (60, 60, 60)
+    pygame.draw.rect(screen, alchemy_color, alchemy_tab_rect)
+    pygame.draw.rect(screen, (255, 255, 255), alchemy_tab_rect, 2)
+    alchemy_text = assets["small_font"].render("Alchemy", True, (255, 255, 255))
+    screen.blit(alchemy_text, alchemy_text.get_rect(center=alchemy_tab_rect.center))
+
+    # Content area (below tabs with proper spacing)
+    content_y = tab_y + tab_height + 10  # Start content below tabs
+    content_height = CRAFTING_PANEL_HEIGHT - (content_y - CRAFTING_Y)
+
+    if crafting_tab == "smithing":
+        draw_smithing_content(screen, assets, is_hovering, content_y)
+    elif crafting_tab == "alchemy":
+        draw_alchemy_content(screen, assets, is_hovering, content_y)
+
+def draw_smithing_content(screen, assets, is_hovering, content_y):
+    """Draws the smithing crafting options."""
+    global axe_button_rect, pickaxe_button_rect
+    
     button_width, button_height, gap = 180, 50, 20
     log_count = get_item_count("Log")
 
     # Axe Button
-    axe_button_rect = pygame.Rect(CRAFTING_X + gap, CRAFTING_Y + header_rect.height + gap, button_width, button_height)
+    axe_button_rect = pygame.Rect(CRAFTING_X + gap, content_y + gap, button_width, button_height)
     req_logs_axe = 5
 
     # Pickaxe Button
     pickaxe_button_rect = pygame.Rect(CRAFTING_X + gap, axe_button_rect.bottom + gap, button_width, button_height)
     req_logs_pickaxe = 10
 
-    # Alchemy Tab Button
-    alchemy_tab_rect = pygame.Rect(CRAFTING_X + CRAFTING_PANEL_WIDTH - 120, CRAFTING_Y + 10, 100, 30)
-    pygame.draw.rect(screen, (80, 80, 150), alchemy_tab_rect)
-    alchemy_text = assets["small_font"].render("Alchemy", True, (255, 255, 255))
-    screen.blit(alchemy_text, alchemy_text.get_rect(center=alchemy_tab_rect.center))
-
     buttons = [
         (axe_button_rect, "axe", req_logs_axe, assets["axe_item"]),
         (pickaxe_button_rect, "pickaxe", req_logs_pickaxe, assets["pickaxe_item"])
@@ -544,26 +681,7 @@ def draw_crafting_panel(screen, assets, is_hovering):
 
     for rect, item_name, req_logs, item_obj in buttons:
         can_craft = log_count >= req_logs
-        color = (0, 150, 0) if can_craft else (70, 70, 70)
-        if is_hovering == item_name:
-            text_to_display = f"{item_obj.name}: {log_count}/{req_logs} Logs"
-            color = (0, 100, 0) if can_craft else (50, 50, 50)
-        else:
-            text_to_display = f"Craft {item_obj.name}"
-
-        pygame.draw.rect(screen, color, rect)
-        pygame.draw.rect(screen, (150, 150, 150), rect, 2)
-        text_surface = assets["small_font"].render(text_to_display, True, (255, 255, 255))
-        screen.blit(text_surface, text_surface.get_rect(center=rect.center))
-
-
-    buttons = [
-        (axe_button_rect, "axe", req_logs_axe, assets["axe_item"]),
-        (pickaxe_button_rect, "pickaxe", req_logs_pickaxe, assets["pickaxe_item"])
-    ]
-
-    for rect, item_name, req_logs, item_obj in buttons:
-        can_craft = log_count >= req_logs
+        
         if is_crafting and item_to_craft and item_to_craft.name.lower() == item_name:
             progress = (crafting_timer / CRAFTING_TIME_MS) * 100
             text_to_display = f"Crafting... {int(progress)}%"
@@ -579,6 +697,35 @@ def draw_crafting_panel(screen, assets, is_hovering):
         pygame.draw.rect(screen, (150, 150, 150), rect, 2)
         text_surface = assets["small_font"].render(text_to_display, True, (255, 255, 255))
         screen.blit(text_surface, text_surface.get_rect(center=rect.center))
+
+def draw_alchemy_content(screen, assets, is_hovering, content_y):
+    """Draws the alchemy crafting options."""
+    global potion_button_rect
+    
+    button_width, button_height, gap = 180, 50, 20
+    flower_count = get_item_count("Flower")
+
+    # Potion Button
+    potion_button_rect = pygame.Rect(CRAFTING_X + gap, content_y + gap, button_width, button_height)
+    req_flowers = 3
+
+    can_craft = flower_count >= req_flowers
+    
+    if is_crafting and item_to_craft and item_to_craft.name == "Potion":
+        progress = (crafting_timer / CRAFTING_TIME_MS) * 100
+        text_to_display = f"Brewing... {int(progress)}%"
+        color = (120, 120, 120)
+    elif is_hovering == "potion":
+        text_to_display = f"Potion: {flower_count}/{req_flowers} Flowers"
+        color = (100, 0, 100) if can_craft else (50, 50, 50)
+    else:
+        text_to_display = f"Brew Potion"
+        color = (150, 0, 150) if can_craft else (70, 70, 70)
+
+    pygame.draw.rect(screen, color, potion_button_rect)
+    pygame.draw.rect(screen, (150, 150, 150), potion_button_rect, 2)
+    text_surface = assets["small_font"].render(text_to_display, True, (255, 255, 255))
+    screen.blit(text_surface, text_surface.get_rect(center=potion_button_rect.center))
 
 def draw_equipment_panel(screen, assets):
     """Draws the equipment GUI."""
@@ -598,20 +745,6 @@ def draw_equipment_panel(screen, assets):
     equipped_weapon = equipment_slots.get("weapon")
     if equipped_weapon:
         screen.blit(pygame.transform.scale(equipped_weapon.image, (EQUIPMENT_SLOT_SIZE, EQUIPMENT_SLOT_SIZE)), weapon_slot_rect)
-
-
-def draw_alchemy_panel(screen, assets):
-    global potion_button_rect
-    panel_rect = pygame.Rect(CRAFTING_X, CRAFTING_Y, CRAFTING_PANEL_WIDTH, CRAFTING_PANEL_HEIGHT)
-    pygame.draw.rect(screen, (70, 40, 90), panel_rect)
-    header_text = assets["small_font"].render("Alchemy", True, (255, 255, 255))
-    screen.blit(header_text, header_text.get_rect(centerx=panel_rect.centerx, top=CRAFTING_Y + 10))
-
-    # Potion button
-    potion_button_rect = pygame.Rect(CRAFTING_X + 20, CRAFTING_Y + 50, 150, 40)
-    pygame.draw.rect(screen, (100, 100, 200), potion_button_rect)
-    potion_text = assets["small_font"].render("Make Potion", True, (255, 255, 255))
-    screen.blit(potion_text, potion_text.get_rect(center=potion_button_rect.center))
 
 def draw_hud(screen, assets):
     """Draws the main HUD elements (icons)."""
@@ -670,77 +803,18 @@ def check_house_entry(world_rect):
             return i
     return None
 
-# --- HELPERS FOR COORDINATES ---
-def get_player_world_rect():
-    """Return the player's rectangle in world coordinates."""
-    # This function should be fixed to handle both indoor/outdoor states.
-    # The existing logic is correct for the 'world' level.
-    # We will use it for collision checks with world objects.
-    return player_pos.move(map_offset_x, map_offset_y)
-
-def world_to_screen_rect(world_rect):
-    """Convert a world rect to screen coordinates (pygame.Rect)."""
-    return pygame.Rect(world_rect.x - map_offset_x, world_rect.y - map_offset_y, world_rect.width, world_rect.height)
-
-# --- SETUP COLLIDERS AND WORLD ---
-def setup_colliders():
-    """Generates the world colliders for the current level."""
-    global tree_rects, house_list, indoor_colliders, flower_tiles, leaf_tiles, stone_rects
-    tree_rects.clear()
-    flower_tiles.clear()
-    leaf_tiles.clear()
-    house_list.clear()
-    stone_rects.clear()
-    # DO NOT put pygame.init() inside here, it's already done in the main init() function
-    # The redundant screen and clock initialization has been removed.
-
-    player_world_rect = get_player_world_rect()
-    map_cols, map_rows = 50, 50
-
-    for row in range(map_rows):
-        for col in range(map_cols):
-            x = col * TILE_SIZE
-            y = row * TILE_SIZE
-            # Borders
-            if row < BORDER_THICKNESS or row >= map_rows - BORDER_THICKNESS or col < BORDER_THICKNESS or col >= map_cols - BORDER_THICKNESS:
-                tree_rects.append(pygame.Rect(x + 5, y + 5, TILE_SIZE - 10, TILE_SIZE - 10))
-            else:
-                rnd = random.random()
-                if rnd < 0.02:
-                    tree_rects.append(pygame.Rect(x + 5, y + 5, TILE_SIZE - 10, TILE_SIZE - 10))
-                elif rnd < 0.035:
-                    offset = (TILE_SIZE - (TILE_SIZE // 2)) // 2
-                    stone_rect = pygame.Rect(x + offset, y + offset, TILE_SIZE // 2, TILE_SIZE // 2)
-                    stone_rects.append(stone_rect)
-                elif rnd < 0.065:
-                    flower_tiles.append((x + 10, y + 10, random.randint(0, 1)))
-                elif rnd < 0.185:
-                    leaf_tiles.append((x + random.randint(8, 14), y + random.randint(8, 14)))
-
-    # Place two houses near the player's current world position
-    house_rect_1 = pygame.Rect(player_world_rect.x + 100, player_world_rect.y, TILE_SIZE * 2, TILE_SIZE * 2)
-    house_rect_2 = pygame.Rect(house_rect_1.x + 200, house_rect_1.y, TILE_SIZE * 2, TILE_SIZE * 2)
-    tree_rects.extend([house_rect_1, house_rect_2])
-    house_list.extend([house_rect_1, house_rect_2])
-
-    indoor_colliders[:] = [
-        pygame.Rect(0, 0, WIDTH, 100),     # top wall
-        pygame.Rect(0, HEIGHT-10, WIDTH, 10), # bottom wall
-        pygame.Rect(0, 0, 10, HEIGHT),       # left wall
-        pygame.Rect(WIDTH-10, 0, 10, HEIGHT)  # right wall
-    ]
-
 # --- MAIN GAME LOGIC ---
 def main():
     """Main game loop."""
     global map_offset_x, map_offset_y, current_level, current_house_index
     global player_frame_index, player_frame_timer, current_direction, last_direction
-    global show_inventory, show_crafting, show_equipment, show_alchemy
+    global show_inventory, show_crafting, show_equipment, crafting_tab
     global is_chopping, chopping_timer, chopping_target_tree, is_swinging
     global is_crafting, crafting_timer, item_to_craft
     global is_mining, mining_timer, mining_target_stone
     global player_pos
-    global potion_button_rect
+    global show_npc_dialog, npc_quest_active, npc_quest_completed
+    global npc_idle_timer, npc_idle_offset_y, npc_idle_direction
 
     # --- Initialize ---
     screen, clock = init()
@@ -751,7 +825,6 @@ def main():
     give_starting_items(assets)
     HOUSE_SPAWN_OFFSET_X = -73
     HOUSE_SPAWN_OFFSET_Y = -52  
-    potion_button_rect = None
 
     # Store a larger player size for indoors
     PLAYER_SIZE_INDOOR = 150
@@ -764,10 +837,14 @@ def main():
         is_hovering = None
         mouse_pos = pygame.mouse.get_pos()
         if show_crafting:
-            if axe_button_rect and axe_button_rect.collidepoint(mouse_pos):
-                is_hovering = "axe"
-            elif pickaxe_button_rect and pickaxe_button_rect.collidepoint(mouse_pos):
-                is_hovering = "pickaxe"
+            if crafting_tab == "smithing":
+                if axe_button_rect and axe_button_rect.collidepoint(mouse_pos):
+                    is_hovering = "axe"
+                elif pickaxe_button_rect and pickaxe_button_rect.collidepoint(mouse_pos):
+                    is_hovering = "pickaxe"
+            elif crafting_tab == "alchemy":
+                if potion_button_rect and potion_button_rect.collidepoint(mouse_pos):
+                    is_hovering = "potion"
 
         # --- Event Handling ---
         for event in pygame.event.get():
@@ -829,7 +906,8 @@ def main():
                                     flower_tiles.remove((fx, fy, idx))
                                     print("Picked a flower!")
                                     break
-
+                            if marcus_pos and player_world_rect.colliderect(marcus_pos.inflate(20, 20)):
+                                show_npc_dialog = True
                             else:
                                 print("You need an Axe to chop trees or a Pickaxe to mine stone!")
                     else:
@@ -861,19 +939,39 @@ def main():
                             # Clear current house index
                             current_house_index = None
 
+                # NPC Dialog controls
+                if event.key == pygame.K_SPACE and show_npc_dialog:
+                    if not npc_quest_active and not npc_quest_completed:
+                        # Accept quest
+                        npc_quest_active = True
+                        show_npc_dialog = False
+                        print("Quest accepted! Bring 3 potions to Soldier Marcus.")
+                    elif npc_quest_active and get_item_count("Potion") >= potions_needed:
+                        # Complete quest
+                        remove_item_from_inventory("Potion", potions_needed)
+                        # Give reward (logs)
+                        for _ in range(10):
+                            add_item_to_inventory(assets["coin_item"])
+                        npc_quest_completed = True
+                        npc_quest_active = False
+                        show_npc_dialog = False
+                        print("Quest completed! You received 10 coins as a reward!")
+                        print("Thank you for the potions!")
+                
+                elif event.key == pygame.K_ESCAPE and show_npc_dialog:
+                    show_npc_dialog = False
 
-    
             if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
                 if show_crafting and not is_crafting:
-                    # --- Switch to Alchemy panel ---
-                    if alchemy_tab_rect and alchemy_tab_rect.collidepoint(event.pos):
-                        show_alchemy = True
-                    else:
-                        show_alchemy = False  # click outside tab goes back to normal crafting
-
-                    # --- Crafting buttons ---
-                    if not show_alchemy:  # only check axe/pickaxe when not in alchemy panel
-                        if axe_button_rect.collidepoint(event.pos):
+                    # Check tab clicks first
+                    if smithing_tab_rect and smithing_tab_rect.collidepoint(event.pos):
+                        crafting_tab = "smithing"
+                    elif alchemy_tab_rect and alchemy_tab_rect.collidepoint(event.pos):
+                        crafting_tab = "alchemy"
+                    
+                    # Then check crafting buttons based on active tab
+                    elif crafting_tab == "smithing":
+                        if axe_button_rect and axe_button_rect.collidepoint(event.pos):
                             if get_item_count("Log") >= 5:
                                 is_crafting = True
                                 crafting_timer = 0
@@ -882,7 +980,7 @@ def main():
                                 print("Crafting an Axe...")
                             else:
                                 print("Not enough logs!")
-                        elif pickaxe_button_rect.collidepoint(event.pos):
+                        elif pickaxe_button_rect and pickaxe_button_rect.collidepoint(event.pos):
                             if get_item_count("Log") >= 10:
                                 is_crafting = True
                                 crafting_timer = 0
@@ -891,7 +989,17 @@ def main():
                                 print("Crafting a Pickaxe...")
                             else:
                                 print("Not enough logs!")
-
+                    
+                    elif crafting_tab == "alchemy":
+                        if potion_button_rect and potion_button_rect.collidepoint(event.pos):
+                            if get_item_count("Flower") >= 3:
+                                is_crafting = True
+                                crafting_timer = 0
+                                item_to_craft = assets["potion_item"]
+                                remove_item_from_inventory("Flower", 3)
+                                print("Brewing a Potion...")
+                            else:
+                                print("Not enough flowers!")
 
                 # Equipment
                 if show_equipment:
@@ -914,6 +1022,16 @@ def main():
                                         break
 
         # --- Game State Updates ---
+        # NPC idle animation
+        npc_idle_timer += dt
+        if npc_idle_timer >= 2000:  # 2 second cycle
+            npc_idle_direction *= -1  # Switch direction
+            npc_idle_timer = 0
+        
+        # Smooth idle movement (gentle bobbing)
+        idle_progress = npc_idle_timer / 2000.0  # 0 to 1
+        npc_idle_offset_y = int(3 * math.sin(idle_progress * 3.14159) * npc_idle_direction)
+        
         # Crafting
         if is_crafting:
             crafting_timer += dt
@@ -921,8 +1039,7 @@ def main():
                 if add_item_to_inventory(item_to_craft):
                     print(f"Crafting complete! {item_to_craft.name} added to inventory.")
                 else:
-                    print(f"Crafting failed: Inventory is full. {item_to_craft.name} materials refunded.")
-                    add_item_to_inventory(assets["log_item"], item_to_craft.craft_cost)  # Assuming a craft_cost attribute
+                    print(f"Crafting failed: Inventory is full.")
                 is_crafting = False
                 item_to_craft = None
 
@@ -1034,19 +1151,17 @@ def main():
         draw_hud(screen, assets)
         draw_tooltip_for_nearby_objects(screen, assets["small_font"])
 
+        # Draw NPC dialog
+        draw_npc_dialog(screen, assets)
 
         # Draw UI panels
         if show_inventory:
             draw_inventory(screen, assets)
         if show_crafting:
-            if show_alchemy:
-                draw_alchemy_panel(screen, assets)
-            else:
-                draw_crafting_panel(screen, assets, is_hovering)
-
+            draw_crafting_panel(screen, assets, is_hovering)
         if show_equipment:
             draw_equipment_panel(screen, assets)
-
+        draw_player_coordinates(screen, assets["small_font"])
         pygame.display.flip()
 
 if __name__ == '__main__':
