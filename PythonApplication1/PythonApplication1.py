@@ -1,5 +1,8 @@
-﻿               
-## -*- coding: utf-8 -*-
+﻿
+
+
+
+    ## -*- coding: utf-8 -*-
 import os
 import random
 import sys
@@ -25,7 +28,6 @@ npc_rect = marcus_pos  # optional: keep npc_rect for dialog checks
 # Player constants
 PLAYER_SIZE = 40
 PLAYER_SIZE_INDOOR = 80
-
 
 # Inventory GUI constants
 INVENTORY_SLOT_SIZE = 40
@@ -54,6 +56,11 @@ EQUIPMENT_Y = (HEIGHT - EQUIPMENT_PANEL_HEIGHT) // 2
 # Mining constants
 MINING_DURATION = 2000  # ms
 
+# Dungeon constants
+DUNGEON_SIZE = 30  # smaller dungeon map
+DUNGEON_SPAWN_X = 5 * TILE_SIZE
+DUNGEON_SPAWN_Y = 5 * TILE_SIZE
+
 # --- ITEM CLASS ---
 class Item:
     def __init__(self, name, image, count=1, category=None):
@@ -67,7 +74,7 @@ class Item:
 player_pos = pygame.Rect(WIDTH // 2, HEIGHT // 2, PLAYER_SIZE, PLAYER_SIZE)  # screen coordinates
 map_offset_x = 0  # how much world is shifted (subtracted when drawing): screen_x = world_x - map_offset_x
 map_offset_y = 0
-current_level = "world"
+current_level = "world"  # can be "world", "house", or "dungeon"
 current_house_index = None
 
 # Player animation state
@@ -109,6 +116,16 @@ npc_idle_timer = 0
 npc_idle_offset_y = 0
 npc_idle_direction = 1  # 1 for up, -1 for down
 
+# Second NPC (Miner) state
+show_miner_dialog = False
+miner_quest_active = False
+miner_quest_completed = False
+ore_needed = 10
+miner_npc_rect = None
+miner_idle_timer = 0
+miner_idle_offset_y = 0
+miner_idle_direction = 1
+
 # Game objects
 inventory = [[None for _ in range(4)] for _ in range(4)]
 equipment_slots = {"weapon": None}
@@ -123,6 +140,12 @@ flower_tiles = []
 leaf_tiles = []
 npc_rect = None
 gold_coins = []
+
+# Dungeon objects
+dungeon_portal = None  # Will be a pygame.Rect
+dungeon_walls = []
+dungeon_enemies = []
+dungeon_exit = None
 
 # Crafting button rects
 axe_button_rect = None
@@ -194,14 +217,12 @@ def load_assets():
         potion_image = pygame.Surface((TILE_SIZE, TILE_SIZE))
         potion_image.fill((150, 0, 150))
     
-    potion_item = Item("Potion", potion_image)
     try:
         coin_image = pygame.transform.scale(pygame.image.load("Coin.png").convert_alpha(), (TILE_SIZE, TILE_SIZE))
     except pygame.error:
         coin_image = pygame.Surface((TILE_SIZE, TILE_SIZE))
-        coin_image.fill((150, 0, 150))
+        coin_image.fill((255, 215, 0))  # Gold color
     
-    potion_item = Item("Potion", potion_image)
     # Load UI icons
     backpack_icon = pygame.transform.scale(pygame.image.load("bag.png").convert_alpha(), (ICON_SIZE, ICON_SIZE))
     crafting_icon = pygame.transform.scale(pygame.image.load("craft.png").convert_alpha(), (ICON_SIZE, ICON_SIZE))
@@ -211,23 +232,30 @@ def load_assets():
     try:
         axe_image = pygame.transform.scale(pygame.image.load("axe.png").convert_alpha(), (TILE_SIZE, TILE_SIZE))
     except pygame.error:
-        axe_image = pygame.Surface((TILE_SIZE, TILE_SIZE)); axe_image.fill((255, 0, 0))
+        axe_image = pygame.Surface((TILE_SIZE, TILE_SIZE))
+        axe_image.fill((139, 69, 19))  # Brown
 
     try:
         pickaxe_image = pygame.transform.scale(pygame.image.load("pickaxe.png").convert_alpha(), (TILE_SIZE, TILE_SIZE))
     except pygame.error:
-        pickaxe_image = pygame.Surface((TILE_SIZE, TILE_SIZE)); pickaxe_image.fill((100, 100, 100))
+        pickaxe_image = pygame.Surface((TILE_SIZE, TILE_SIZE))
+        pickaxe_image.fill((105, 105, 105))  # Gray
 
     try:
         stone_image = pygame.transform.scale(pygame.image.load("stone.png").convert_alpha(), (TILE_SIZE // 2, TILE_SIZE // 2))
     except pygame.error:
-        stone_image = pygame.Surface((TILE_SIZE, TILE_SIZE)); stone_image.fill((150, 150, 150))
+        stone_image = pygame.Surface((TILE_SIZE // 2, TILE_SIZE // 2))
+        stone_image.fill((150, 150, 150))
+
+    try:
+        ore_image = pygame.transform.scale(pygame.image.load("ore.png").convert_alpha(), (TILE_SIZE // 2, TILE_SIZE // 2))
+    except pygame.error:
+        ore_image = pygame.Surface((TILE_SIZE // 2, TILE_SIZE // 2))
+        ore_image.fill((139, 69, 19))  # Brown ore
 
     # Load NPC image from sprite sheet with fallback
     try:
         soldier_sheet = pygame.image.load("soldier.png").convert_alpha()
-        # For a 600x100 sprite sheet, each frame is 100x100 pixels
-        # Extract the first frame (idle pose) and scale it up 4x
         frame_width = 100
         frame_height = 100
         npc_image = pygame.transform.scale(soldier_sheet.subsurface(pygame.Rect(0, 0, frame_width, frame_height)), (PLAYER_SIZE * 4, PLAYER_SIZE * 4))
@@ -235,13 +263,58 @@ def load_assets():
         npc_image = pygame.Surface((PLAYER_SIZE * 4, PLAYER_SIZE * 4))
         npc_image.fill((255, 255, 0))  # Yellow placeholder
 
+    try:
+        miner_sheet = pygame.image.load("npc1.png").convert_alpha()
+    
+        # Each frame is 32x47
+        frame_width1 = miner_sheet.get_width() // 8   # 256 / 8 = 32
+        frame_height1 = miner_sheet.get_height()      # 47
+    
+        # Take the first frame (x=0, y=0)
+        frame_rect = pygame.Rect(0, 0, frame_width1, frame_height1)
+        miner_image = pygame.transform.scale(
+            miner_sheet.subsurface(frame_rect),
+            (PLAYER_SIZE, PLAYER_SIZE)  # scale to your player size
+        )
+    except Exception as e:
+        print("Miner load failed:", e)
+        miner_image = pygame.Surface((PLAYER_SIZE, PLAYER_SIZE))
+        miner_image.fill((160, 82, 45))  # Brown placeholder
+
+    # Create portal and dungeon assets
+    # New PNG code
+    # Load the PNG
+    portal_image = pygame.image.load("cave.png").convert_alpha()
+
+    # Get original size
+    original_width, original_height = portal_image.get_size()
+
+    # Resize by factor of 10
+    scale_factor = 0.1
+    new_width = int(original_width * scale_factor)
+    new_height = int(original_height * scale_factor)
+
+    # Scale the image
+    portal_image = pygame.transform.smoothscale(portal_image, (new_width, new_height))
+
+    # Simple dungeon wall texture
+    dungeon_wall_image = pygame.Surface((TILE_SIZE, TILE_SIZE))
+    dungeon_wall_image.fill((60, 60, 60))  # Dark gray
+    
+    # Dungeon floor
+    dungeon_floor_image = pygame.Surface((TILE_SIZE, TILE_SIZE))
+    dungeon_floor_image.fill((40, 40, 40))  # Darker floor
+
     # Define Item objects
     log_item = Item("Log", log_image)
     axe_item = Item("Axe", axe_image, category="Weapon")
     pickaxe_item = Item("Pickaxe", pickaxe_image, category="Weapon")
     stone_item = Item("Stone", stone_image)
+    ore_item = Item("Ore", ore_image)
     flower_item = Item("Flower", flower_images[0])
+    potion_item = Item("Potion", potion_image)
     coin_item = Item("Coin", coin_image)
+    
     assets = {
         "grass": grass_image,
         "tree": tree_image,
@@ -253,6 +326,9 @@ def load_assets():
         ],
         "flowers": flower_images,
         "leaf": leaf_image,
+        "portal": portal_image,
+        "dungeon_wall": dungeon_wall_image,
+        "dungeon_floor": dungeon_floor_image,
         "font": pygame.font.SysFont(None, 36),
         "small_font": pygame.font.SysFont(None, 24),
         "backpack_icon": backpack_icon,
@@ -262,26 +338,18 @@ def load_assets():
         "axe_item": axe_item,
         "pickaxe_item": pickaxe_item,
         "stone_item": stone_item,
+        "ore_item": ore_item,
         "stone_img": stone_image,
+        "ore_img": ore_image,
         "flower_item": flower_item,
         "potion_item": potion_item,
         "npc_image": npc_image,
+        "miner_image": miner_image,
         "coin_item": coin_item,
     }
     return assets
 
 # --- Indoor Colliders (adjustable!) ---
-# Define each wall or obstacle as (x, y, width, height)
-INDOOR_WALLS = [
-    (0, 0, WIDTH, 10),              # Top wall
-    (0, HEIGHT - 10, WIDTH, 10),  # Bottom wall
-    (0, 0, 10, HEIGHT),             # Left wall
-    (WIDTH - 10, 0, 10, HEIGHT),  # Right wall
-    # Add more walls or furniture here
-    (200, 150, 100, 20),           # Example table
-    (400, 300, 150, 30)             # Example counter
-]
-
 def setup_indoor_colliders():
     global indoor_colliders
     indoor_colliders[:] = [
@@ -291,11 +359,47 @@ def setup_indoor_colliders():
         pygame.Rect(WIDTH-10, 0, 10, HEIGHT)    # right
     ]
 
+def setup_dungeon():
+    """Creates the dungeon layout with walls, ore deposits, and exit."""
+    global dungeon_walls, dungeon_exit
+    dungeon_walls.clear()
+    
+    # Create dungeon walls around the perimeter
+    for row in range(DUNGEON_SIZE):
+        for col in range(DUNGEON_SIZE):
+            x = col * TILE_SIZE
+            y = row * TILE_SIZE
+            
+            # Border walls
+            if row == 0 or row == DUNGEON_SIZE-1 or col == 0 or col == DUNGEON_SIZE-1:
+                dungeon_walls.append(pygame.Rect(x, y, TILE_SIZE, TILE_SIZE))
+            # Add some interior walls for complexity
+            elif (row == 10 and col > 5 and col < 20) or (col == 15 and row > 8 and row < 15):
+                dungeon_walls.append(pygame.Rect(x, y, TILE_SIZE, TILE_SIZE))
+    
+    # Add ore deposits scattered throughout the dungeon
+    for row in range(2, DUNGEON_SIZE-2):
+        for col in range(2, DUNGEON_SIZE-2):
+            x = col * TILE_SIZE
+            y = row * TILE_SIZE
+            
+            # Skip areas with walls
+            wall_here = any(pygame.Rect(x, y, TILE_SIZE, TILE_SIZE).colliderect(wall) for wall in dungeon_walls)
+            if not wall_here and random.random() < 0.08:  # 8% chance for ore
+                offset = (TILE_SIZE - (TILE_SIZE // 2)) // 2
+                ore_rect = pygame.Rect(x + offset, y + offset, TILE_SIZE // 2, TILE_SIZE // 2)
+                stone_rects.append(ore_rect)  # Add to stone_rects so it can be mined
+    
+    # Create exit portal in the bottom-right area
+    dungeon_exit = pygame.Rect((DUNGEON_SIZE-5) * TILE_SIZE, (DUNGEON_SIZE-5) * TILE_SIZE, TILE_SIZE * 2, TILE_SIZE * 2)
 
 # --- SETUP COLLIDERS AND WORLD ---
 def setup_colliders():
     """Generates the world colliders for the current level."""
-    global tree_rects, house_list, indoor_colliders, flower_tiles, leaf_tiles, stone_rects, npc_rect
+    global tree_rects, house_list, indoor_colliders, flower_tiles, leaf_tiles, stone_rects
+    global npc_rect, dungeon_portal, miner_npc_rect
+
+    # Clear existing colliders
     tree_rects.clear()
     flower_tiles.clear()
     leaf_tiles.clear()
@@ -305,52 +409,76 @@ def setup_colliders():
     player_world_rect = get_player_world_rect()
     map_cols, map_rows = 50, 50
 
+    # --- BORDER TREES ---
     for row in range(map_rows):
         for col in range(map_cols):
             x = col * TILE_SIZE
             y = row * TILE_SIZE
-            # Borders
             if row < BORDER_THICKNESS or row >= map_rows - BORDER_THICKNESS or col < BORDER_THICKNESS or col >= map_cols - BORDER_THICKNESS:
                 tree_rects.append(pygame.Rect(x + 5, y + 5, TILE_SIZE - 10, TILE_SIZE - 10))
-            else:
-                rnd = random.random()
-                if rnd < 0.02:
-                    tree_rects.append(pygame.Rect(x + 5, y + 5, TILE_SIZE - 10, TILE_SIZE - 10))
-                elif rnd < 0.035:
-                    offset = (TILE_SIZE - (TILE_SIZE // 2)) // 2
-                    stone_rect = pygame.Rect(x + offset, y + offset, TILE_SIZE // 2, TILE_SIZE // 2)
-                    stone_rects.append(stone_rect)
-                elif rnd < 0.065:
-                    flower_tiles.append((x + 10, y + 10, random.randint(0, 1)))
-                elif rnd < 0.185:
-                    leaf_tiles.append((x + random.randint(8, 14), y + random.randint(8, 14)))
+    
+    # --- RANDOM WORLD OBJECTS ---
+    for row in range(map_rows):
+        for col in range(map_cols):
+            x = col * TILE_SIZE
+            y = row * TILE_SIZE
 
-    # Place two houses near the player's current world position
+            # Skip borders
+            if row < BORDER_THICKNESS or row >= map_rows - BORDER_THICKNESS or col < BORDER_THICKNESS or col >= map_cols - BORDER_THICKNESS:
+                continue
+
+            rnd = random.random()
+            if rnd < 0.02:
+                tree_rects.append(pygame.Rect(x + 5, y + 5, TILE_SIZE - 10, TILE_SIZE - 10))
+            elif rnd < 0.035:
+                offset = (TILE_SIZE - (TILE_SIZE // 2)) // 2
+                stone_rects.append(pygame.Rect(x + offset, y + offset, TILE_SIZE // 2, TILE_SIZE // 2))
+            elif rnd < 0.065:
+                flower_tiles.append((x + 10, y + 10, random.randint(0, 1)))
+            elif rnd < 0.185:
+                leaf_tiles.append((x + random.randint(8, 14), y + random.randint(8, 14)))
+
+    # --- HOUSE COLLIDERS ---
     house_rect_1 = pygame.Rect(player_world_rect.x + 100, player_world_rect.y, TILE_SIZE * 2, TILE_SIZE * 2)
     house_rect_2 = pygame.Rect(house_rect_1.x + 200, house_rect_1.y, TILE_SIZE * 2, TILE_SIZE * 2)
     tree_rects.extend([house_rect_1, house_rect_2])
     house_list.extend([house_rect_1, house_rect_2])
 
-    # Place NPC near the first house (bigger collision rect for scaled up soldier)
+    # NPC near first house
     npc_rect = pygame.Rect(house_rect_1.x - 60, house_rect_1.y + 30, PLAYER_SIZE * 4, PLAYER_SIZE * 4)
 
+    # --- DUNGEON PORTAL COLLIDER LIKE A HOUSE ---
+    portal_width = 50   # width in pixels
+    portal_height = 50   # height in pixels
+    dungeon_portal = pygame.Rect(1270, 1915, portal_width, portal_height)
+    tree_rects.append(dungeon_portal)  # blocks movement like a house
+
+    # Miner NPC near portal
+    miner_npc_rect = pygame.Rect(dungeon_portal.x - 40, dungeon_portal.y, PLAYER_SIZE * 4, PLAYER_SIZE * 4)
+
+    # --- INDOOR COLLIDERS ---
     indoor_colliders[:] = [
-        pygame.Rect(0, 0, WIDTH, 100),     # top wall
-        pygame.Rect(0, HEIGHT-10, WIDTH, 10), # bottom wall
-        pygame.Rect(0, 0, 10, HEIGHT),       # left wall
-        pygame.Rect(WIDTH-10, 0, 10, HEIGHT)  # right wall
+        pygame.Rect(0, 0, WIDTH, 100),        # top
+        pygame.Rect(0, HEIGHT - 10, WIDTH, 10),  # bottom
+        pygame.Rect(0, 0, 10, HEIGHT),       # left
+        pygame.Rect(WIDTH - 10, 0, 10, HEIGHT)  # right
     ]
+
+    # --- Setup dungeon if needed ---
+    if not dungeon_walls:
+        setup_dungeon()
+
+
 def draw_player_coordinates(screen, font):
-    """Draws the player’s current world coordinates in the top-left corner."""
+    """Draws the player's current world coordinates in the top-left corner."""
     player_rect = get_player_world_rect()  # get world coordinates
-    coord_text = f"Player: ({player_rect.x}, {player_rect.y})"
+    coord_text = f"Player: ({player_rect.x}, {player_rect.y}) - Level: {current_level}"
     text_surf = font.render(coord_text, True, (255, 255, 255))
     screen.blit(text_surf, (10, 10))  # 10 pixels from top-left corner
 
 def give_starting_items(assets):
     """Adds initial items to the inventory."""
-    for _ in range(10):
-        add_item_to_inventory(assets["potion_item"])
+    add_item_to_inventory(assets["potion_item"])
     add_item_to_inventory(assets["axe_item"])
 
 # --- INVENTORY/CRAFTING/EQUIPMENT LOGIC ---
@@ -446,23 +574,63 @@ def draw_world(screen, assets):
     for lx, ly in leaf_tiles:
         screen.blit(assets["leaf"], (lx - map_offset_x, ly - map_offset_y))
 
+    # Draw the dungeon portal
+    if dungeon_portal:
+        portal_offset_x = 0   # negative = left, positive = right
+        portal_offset_y = 0   # positive = down, negative = up
+    
+        screen.blit(
+            assets["portal"],
+            (dungeon_portal.x + portal_offset_x - map_offset_x,
+             dungeon_portal.y + portal_offset_y - map_offset_y)
+        )
+
+    # Draw the houses
     if house_list:
         screen.blit(assets["house"], (house_list[0].x - map_offset_x, house_list[0].y - map_offset_y))
         screen.blit(assets["house1"], (house_list[1].x - map_offset_x, house_list[1].y - map_offset_y))
 
     # Draw NPC with idle animation
     if npc_rect:
-        # Calculate idle animation position
         animated_y = npc_rect.y + npc_idle_offset_y
         screen.blit(assets["npc_image"], (npc_rect.x - map_offset_x, animated_y - map_offset_y))
+    
+    # Draw Miner NPC with idle animation
+    if miner_npc_rect:
+        miner_animated_y = miner_npc_rect.y + miner_idle_offset_y
+        screen.blit(assets["miner_image"], (miner_npc_rect.x - map_offset_x, miner_animated_y - map_offset_y))
+
+def draw_dungeon(screen, assets):
+    """Draws the dungeon level."""
+    start_col = map_offset_x // TILE_SIZE
+    start_row = map_offset_y // TILE_SIZE
+    cols_to_draw = (WIDTH // TILE_SIZE) + 3
+    rows_to_draw = (HEIGHT // TILE_SIZE) + 3
+
+    # Draw dungeon floor
+    for row in range(start_row, start_row + rows_to_draw):
+        for col in range(start_col, start_col + cols_to_draw):
+            x, y = col * TILE_SIZE, row * TILE_SIZE
+            screen.blit(assets["dungeon_floor"], (x - map_offset_x, y - map_offset_y))
+
+    # Draw dungeon walls
+    for wall in dungeon_walls:
+        screen.blit(assets["dungeon_wall"], (wall.x - map_offset_x, wall.y - map_offset_y))
+    
+    # Draw ore deposits
+    for ore in stone_rects:
+        screen.blit(assets["ore_img"], (ore.x - map_offset_x, ore.y - map_offset_y))
+    
+    # Draw exit portal
+    if dungeon_exit:
+        screen.blit(assets["portal"], (dungeon_exit.x - map_offset_x, dungeon_exit.y - map_offset_y))
 
 def draw_tooltip(screen, font, text, pos):
     padding = 6
     text_surface = font.render(text, True, (255, 255, 255))
     rect = text_surface.get_rect()
-    rect.midbottom = (pos[0] + 15, pos[1] - 5)  # Offset above object
+    rect.midbottom = (pos[0] + 15, pos[1] - 5)
 
-    # Background with alpha
     bg_surf = pygame.Surface((rect.width + 2*padding, rect.height + 2*padding), pygame.SRCALPHA)
     bg_surf.fill((0, 0, 0, 180))
     pygame.draw.rect(bg_surf, (255, 255, 255), bg_surf.get_rect(), 1)
@@ -475,7 +643,6 @@ def draw_npc_dialog(screen, assets):
     if not show_npc_dialog:
         return
 
-    # Dialog box
     dialog_width = 500
     dialog_height = 150
     dialog_x = (WIDTH - dialog_width) // 2
@@ -485,22 +652,20 @@ def draw_npc_dialog(screen, assets):
     pygame.draw.rect(screen, (40, 40, 40), dialog_rect)
     pygame.draw.rect(screen, (255, 255, 255), dialog_rect, 3)
 
-    # NPC name
     name_text = assets["small_font"].render("Soldier Marcus", True, (255, 215, 0))
     screen.blit(name_text, (dialog_x + 10, dialog_y + 5))
 
-    # Dialog lines based on quest state
     if not npc_quest_active and not npc_quest_completed:
         dialog_lines = [
             f"Greetings, Traveler! I'm in need of healing potions. Could ",
-            f"you brew {potions_needed} potions for us? I'd be grateful!'",
+            f"you brew {potions_needed} potions for us? I'd be grateful!",
             "Press [SPACE] to accept the quest, or [ESC] to decline."
         ]
     elif npc_quest_active:
         potions_current = get_item_count("Potion")
         if potions_current >= potions_needed:
             dialog_lines = [
-                f"Excellent! You have {potions_current} potions!",
+                f"Excellent! You have the 3 potions I needed!",
                 f"Press [SPACE] to deliver {potions_needed} potions and complete the quest."
             ]
         else:
@@ -509,7 +674,7 @@ def draw_npc_dialog(screen, assets):
                 "Return when you have brewed enough for my unit!",
                 "Press [ESC] to close."
             ]
-    elif npc_quest_completed:  # Quest completed
+    elif npc_quest_completed:
         dialog_lines = [
             "Thank you for the potions! My unit is ready for battle!",
             "I gave you your reward, 10 coins.",
@@ -517,7 +682,56 @@ def draw_npc_dialog(screen, assets):
             "Press [ESC] to close."
         ]
 
-    # Draw dialog lines
+    y_offset = 35
+    for line in dialog_lines:
+        line_text = assets["small_font"].render(line, True, (255, 255, 255))
+        screen.blit(line_text, (dialog_x + 10, dialog_y + y_offset))
+        y_offset += 25
+
+def draw_miner_dialog(screen, assets):
+    """Draws the Miner NPC dialog box."""
+    if not show_miner_dialog:
+        return
+
+    dialog_width = 500
+    dialog_height = 150
+    dialog_x = (WIDTH - dialog_width) // 2
+    dialog_y = HEIGHT - dialog_height - 20
+    dialog_rect = pygame.Rect(dialog_x, dialog_y, dialog_width, dialog_height)
+    
+    pygame.draw.rect(screen, (40, 40, 40), dialog_rect)
+    pygame.draw.rect(screen, (255, 255, 255), dialog_rect, 3)
+
+    name_text = assets["small_font"].render("Miner Gareth", True, (139, 69, 19))
+    screen.blit(name_text, (dialog_x + 10, dialog_y + 5))
+
+    if not miner_quest_active and not miner_quest_completed:
+        dialog_lines = [
+            f"Ho there, adventurer! The mines below have been overrun by",
+            f"creatures! I need someone to gather {ore_needed} ore chunks for our village.",
+            "Press [SPACE] to accept the quest, or [ESC] to decline."
+        ]
+    elif miner_quest_active:
+        ore_current = get_item_count("Ore")
+        if ore_current >= ore_needed:
+            dialog_lines = [
+                f"Amazing! You found the {ore_needed} ore chunks we needed!",
+                f"Press [SPACE] to deliver {ore_needed} ore and complete the quest."
+            ]
+        else:
+            dialog_lines = [
+                f"You currently have {ore_current}/{ore_needed} ore chunks.",
+                "The dungeon below should have plenty. Be careful down there!",
+                "Press [ESC] to close."
+            ]
+    elif miner_quest_completed:
+        dialog_lines = [
+            "Thank you for the ore! Our smiths can work again thanks to you!",
+            "I've rewarded you with 15 coins for your bravery.",
+            "May fortune smile upon your future adventures!",
+            "Press [ESC] to close."
+        ]
+
     y_offset = 35
     for line in dialog_lines:
         line_text = assets["small_font"].render(line, True, (255, 255, 255))
@@ -525,21 +739,39 @@ def draw_npc_dialog(screen, assets):
         y_offset += 25
 
 def draw_tooltip_for_nearby_objects(screen, font):
-    """Draw a tooltip for interactive objects: hover-based for NPCs, flowers, trees, stones; proximity-based for houses/exits."""
+    """Draw a tooltip for interactive objects."""
     tooltip_text = None
     tooltip_pos = None
     mouse_pos = pygame.mouse.get_pos()
     player_world_rect = get_player_world_rect()
 
     if current_level == "world":
-        # --- Houses: show tooltip if near the player ---
-        house_index = check_house_entry(player_world_rect)
-        if house_index is not None:
-            house_screen = world_to_screen_rect(house_list[house_index])
-            tooltip_text = "Enter [e]"
-            tooltip_pos = (house_screen.x, house_screen.y)
+        # Portal Entry: check if near dungeon portal
+        if dungeon_portal and player_world_rect.colliderect(dungeon_portal.inflate(20, 20)):
+            portal_screen = world_to_screen_rect(dungeon_portal)
 
-        # --- Flowers: show only on mouse hover ---
+            # Render tooltip surface to get its size
+            tooltip_surface = font.render(tooltip_text, True, (255, 255, 255))
+            tooltip_width, tooltip_height = tooltip_surface.get_size()
+
+            # Position tooltip centered above the portal
+            tooltip_pos = (
+                portal_screen.x + TILE_SIZE - tooltip_width // 2,
+                portal_screen.y + TILE_SIZE - tooltip_height - 5
+            )
+
+            # Draw the tooltip
+            screen.blit(tooltip_surface, tooltip_pos)
+
+        # Houses: show tooltip if near the player (but not if portal tooltip is already set)
+        if tooltip_text is None:
+            house_index = check_house_entry(player_world_rect)
+            if house_index is not None:
+                house_screen = world_to_screen_rect(house_list[house_index])
+                tooltip_text = "Enter [e]"
+                tooltip_pos = (house_screen.x, house_screen.y)
+
+        # Flowers: show only on mouse hover
         if tooltip_text is None:
             for fx, fy, idx in flower_tiles:
                 flower_rect = pygame.Rect(fx - map_offset_x, fy - map_offset_y, 30, 30)
@@ -548,7 +780,7 @@ def draw_tooltip_for_nearby_objects(screen, font):
                     tooltip_pos = (fx - map_offset_x, fy - map_offset_y)
                     break
 
-        # --- Trees: show only on mouse hover ---
+        # Trees: show only on mouse hover
         if tooltip_text is None:
             for tree in tree_rects:
                 tree_screen = world_to_screen_rect(tree)
@@ -557,7 +789,7 @@ def draw_tooltip_for_nearby_objects(screen, font):
                     tooltip_pos = (tree_screen.x, tree_screen.y)
                     break
 
-        # --- Stones: show only on mouse hover ---
+        # Stones: show only on mouse hover
         if tooltip_text is None:
             for stone in stone_rects:
                 stone_screen = world_to_screen_rect(stone)
@@ -566,30 +798,73 @@ def draw_tooltip_for_nearby_objects(screen, font):
                     tooltip_pos = (stone_screen.x, stone_screen.y)
                     break
 
-        # --- Marcus: show only on mouse hover ---
-        if tooltip_text is None and marcus_pos:
+        # Marcus: show only on mouse hover
+        if tooltip_text is None and npc_rect:
             marcus_screen = pygame.Rect(
-                marcus_pos.x - map_offset_x,
-                marcus_pos.y - map_offset_y + npc_idle_offset_y,
-                marcus_pos.width,
-                marcus_pos.height
+                npc_rect.x - map_offset_x,
+                npc_rect.y - map_offset_y + npc_idle_offset_y,
+                npc_rect.width,
+                npc_rect.height
             )
             if marcus_screen.collidepoint(mouse_pos):
                 tooltip_text = "Marcus"
                 tooltip_pos = (marcus_screen.x, marcus_screen.y)
 
-    else:
-        # --- Inside house: Exit door tooltip if near ---
+        # Miner: show only on mouse hover
+        if tooltip_text is None and miner_npc_rect:
+            miner_screen = pygame.Rect(
+                miner_npc_rect.x - map_offset_x,
+                miner_npc_rect.y - map_offset_y + miner_idle_offset_y,
+                miner_npc_rect.width,
+                miner_npc_rect.height
+            )
+            if miner_screen.collidepoint(mouse_pos):
+                tooltip_text = "Miner Gareth"
+                tooltip_pos = (miner_screen.x, miner_screen.y)
+
+
+        if current_level == "world":
+            # Portal Entry: check if near dungeon portal
+            if dungeon_portal and player_world_rect.colliderect(dungeon_portal.inflate(20, 20)):
+                tooltip_text = "Enter Dungeon [e]"
+                portal_screen = world_to_screen_rect(dungeon_portal)
+                tooltip_pos = (portal_screen.x, portal_screen.y)
+    
+    # Only check houses if no tooltip is already set
+    if tooltip_text is None:
+        house_index = check_house_entry(player_world_rect)
+        if house_index is not None:
+            house_screen = world_to_screen_rect(house_list[house_index])
+            tooltip_text = "Enter [e]"
+            tooltip_pos = (house_screen.x, house_screen.y)
+
+    elif current_level == "house":
+        # Inside house: Exit door tooltip if near
         door_zone = pygame.Rect(WIDTH // 2 - 40, HEIGHT - 100, 80, 80)
         if player_pos.colliderect(door_zone):
             tooltip_text = "Exit [e]"
             tooltip_pos = door_zone.topleft
+    
+    elif current_level == "dungeon":
+        # Inside dungeon: Exit portal tooltip if near
+        player_world_rect = get_player_world_rect()
+        if dungeon_exit and player_world_rect.colliderect(dungeon_exit.inflate(20, 20)):
+            exit_screen = world_to_screen_rect(dungeon_exit)
+            tooltip_text = "Exit Dungeon [e]"
+            tooltip_pos = (exit_screen.x, exit_screen.y)
+        
+        # Dungeon ore: show only on mouse hover
+        if tooltip_text is None:
+            for stone in stone_rects:
+                stone_screen = world_to_screen_rect(stone)
+                if stone_screen.collidepoint(mouse_pos):
+                    tooltip_text = "Ore Deposit [e]"
+                    tooltip_pos = (stone_screen.x, stone_screen.y)
+                    break
 
-    # --- Draw the tooltip if we have text and position ---
+    # Draw the tooltip if we have text and position
     if tooltip_text and tooltip_pos:
         draw_tooltip(screen, font, tooltip_text, tooltip_pos)
-
-
 
 def draw_inventory(screen, assets):
     """Draws the inventory GUI."""
@@ -616,7 +891,7 @@ def draw_inventory(screen, assets):
 
 def draw_crafting_panel(screen, assets, is_hovering):
     """Draws the crafting GUI with tabs for smithing and alchemy."""
-    global axe_button_rect, pickaxe_button_rect, alchemy_tab_rect, smithing_tab_rect
+    global axe_button_rect, pickaxe_button_rect, potion_button_rect, alchemy_tab_rect, smithing_tab_rect
 
     panel_rect = pygame.Rect(CRAFTING_X, CRAFTING_Y, CRAFTING_PANEL_WIDTH, CRAFTING_PANEL_HEIGHT)
     pygame.draw.rect(screen, (101, 67, 33), panel_rect)
@@ -793,6 +1068,14 @@ def handle_collision(new_world_rect):
         if any(new_world_rect.colliderect(r) for r in stone_rects):
             return True
         return False
+    elif current_level == "dungeon":
+        # collide with dungeon walls
+        if any(new_world_rect.colliderect(r) for r in dungeon_walls):
+            return True
+        # collide with ore deposits
+        if any(new_world_rect.colliderect(r) for r in stone_rects):
+            return True
+        return False
     else:
         return any(new_world_rect.colliderect(r) for r in indoor_colliders)
 
@@ -814,7 +1097,9 @@ def main():
     global is_mining, mining_timer, mining_target_stone
     global player_pos
     global show_npc_dialog, npc_quest_active, npc_quest_completed
+    global show_miner_dialog, miner_quest_active, miner_quest_completed
     global npc_idle_timer, npc_idle_offset_y, npc_idle_direction
+    global miner_idle_timer, miner_idle_offset_y, miner_idle_direction
 
     # --- Initialize ---
     screen, clock = init()
@@ -869,9 +1154,17 @@ def main():
                 player_world_rect = get_player_world_rect()
                 if event.key == pygame.K_e:
                     if current_level == "world":
-                        # --- PRIORITY 1: Enter House ---
-                        house_index = check_house_entry(player_world_rect)
-                        if house_index is not None:
+                        # --- PRIORITY 1: Enter Dungeon Portal ---
+                        if dungeon_portal and player_world_rect.colliderect(dungeon_portal.inflate(20, 20)):
+                            current_level = "dungeon"
+                            # Spawn player at dungeon entrance
+                            map_offset_x = DUNGEON_SPAWN_X - WIDTH // 2
+                            map_offset_y = DUNGEON_SPAWN_Y - HEIGHT // 2
+                            player_pos.center = (WIDTH // 2, HEIGHT // 2)
+                            
+                        # --- PRIORITY 2: Enter House ---
+                        elif check_house_entry(player_world_rect) is not None:
+                            house_index = check_house_entry(player_world_rect)
                             current_level = "house"
                             current_house_index = house_index
                             # Resize player_pos rect and place it in the center of the screen
@@ -879,7 +1172,7 @@ def main():
                             player_pos.center = (WIDTH // 2, HEIGHT // 2)
                             setup_indoor_colliders()
                         else:
-                            # --- PRIORITY 2: Chop Trees ---
+                            # --- PRIORITY 3: Chop Trees ---
                             if equipment_slots["weapon"] and equipment_slots["weapon"].name == "Axe":
                                 for tree in list(tree_rects):
                                     if player_world_rect.colliderect(tree.inflate(20, 20)):
@@ -888,7 +1181,7 @@ def main():
                                         chopping_timer = 0
                                         current_direction = "idle"
                                         break
-                            # --- PRIORITY 3: Mine Stones ---
+                            # --- PRIORITY 4: Mine Stones ---
                             elif equipment_slots["weapon"] and equipment_slots["weapon"].name == "Pickaxe":
                                 for stone in list(stone_rects):
                                     if player_world_rect.colliderect(stone.inflate(20, 20)):
@@ -898,18 +1191,47 @@ def main():
                                         current_direction = "idle"
                                         break
 
-                            # --- PRIORITY 4: Pick Flowers ---
-                            for fx, fy, idx in list(flower_tiles):
-                                flower_rect = pygame.Rect(fx, fy, 30, 30)  # match the drawn flower size
-                                if player_world_rect.colliderect(flower_rect.inflate(10, 10)):
-                                    add_item_to_inventory(assets["flower_item"])
-                                    flower_tiles.remove((fx, fy, idx))
-                                    print("Picked a flower!")
-                                    break
-                            if marcus_pos and player_world_rect.colliderect(marcus_pos.inflate(20, 20)):
+                            # --- PRIORITY 5: Pick Flowers ---
+                            if not (is_chopping or is_mining):
+                                for fx, fy, idx in list(flower_tiles):
+                                    flower_rect = pygame.Rect(fx, fy, 30, 30)  # match the drawn flower size
+                                    if player_world_rect.colliderect(flower_rect.inflate(10, 10)):
+                                        add_item_to_inventory(assets["flower_item"])
+                                        flower_tiles.remove((fx, fy, idx))
+                                        print("Picked a flower!")
+                                        break
+                            
+                            # --- PRIORITY 6: Talk to Marcus ---
+                            if npc_rect and player_world_rect.colliderect(npc_rect.inflate(20, 20)):
                                 show_npc_dialog = True
-                            else:
+                            # --- PRIORITY 7: Talk to Miner ---
+                            elif miner_npc_rect and player_world_rect.colliderect(miner_npc_rect.inflate(20, 20)):
+                                show_miner_dialog = True
+                            elif not (is_chopping or is_mining):
                                 print("You need an Axe to chop trees or a Pickaxe to mine stone!")
+                    
+                    elif current_level == "dungeon":
+                        # --- Inside dungeon: Mine stones/ore or exit ---
+                        if dungeon_exit and player_world_rect.colliderect(dungeon_exit.inflate(20, 20)):
+                            # Exit dungeon back to world
+                            current_level = "world"
+                            # Spawn back near the portal
+                            portal_x = 25 * TILE_SIZE
+                            portal_y = 38 * TILE_SIZE
+                            map_offset_x = portal_x - WIDTH // 2
+                            map_offset_y = portal_y - HEIGHT // 2 + 100  # Slightly south of portal
+                            player_pos.center = (WIDTH // 2, HEIGHT // 2)
+                        elif equipment_slots["weapon"] and equipment_slots["weapon"].name == "Pickaxe":
+                            for stone in list(stone_rects):
+                                if player_world_rect.colliderect(stone.inflate(20, 20)):
+                                    is_mining = True
+                                    mining_target_stone = stone
+                                    mining_timer = 0
+                                    current_direction = "idle"
+                                    break
+                        else:
+                            print("You need a Pickaxe to mine ore!")
+                            
                     else:
                         # Inside house -> Exit
                         door_zone = pygame.Rect(WIDTH // 2 - 40, HEIGHT - 100, 80, 80)
@@ -949,7 +1271,7 @@ def main():
                     elif npc_quest_active and get_item_count("Potion") >= potions_needed:
                         # Complete quest
                         remove_item_from_inventory("Potion", potions_needed)
-                        # Give reward (logs)
+                        # Give reward (coins)
                         for _ in range(10):
                             add_item_to_inventory(assets["coin_item"])
                         npc_quest_completed = True
@@ -958,8 +1280,28 @@ def main():
                         print("Quest completed! You received 10 coins as a reward!")
                         print("Thank you for the potions!")
                 
-                elif event.key == pygame.K_ESCAPE and show_npc_dialog:
+                # Miner Dialog controls
+                if event.key == pygame.K_SPACE and show_miner_dialog:
+                    if not miner_quest_active and not miner_quest_completed:
+                        # Accept miner quest
+                        miner_quest_active = True
+                        show_miner_dialog = False
+                        print("Quest accepted! Gather 10 ore from the dungeon for Miner Gareth.")
+                    elif miner_quest_active and get_item_count("Ore") >= ore_needed:
+                        # Complete miner quest
+                        remove_item_from_inventory("Ore", ore_needed)
+                        # Give reward (more coins than Marcus)
+                        for _ in range(15):
+                            add_item_to_inventory(assets["coin_item"])
+                        miner_quest_completed = True
+                        miner_quest_active = False
+                        show_miner_dialog = False
+                        print("Quest completed! You received 15 coins as a reward!")
+                        print("Thank you for the ore!")
+                
+                elif event.key == pygame.K_ESCAPE and (show_npc_dialog or show_miner_dialog):
                     show_npc_dialog = False
+                    show_miner_dialog = False
 
             if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
                 if show_crafting and not is_crafting:
@@ -1032,6 +1374,16 @@ def main():
         idle_progress = npc_idle_timer / 2000.0  # 0 to 1
         npc_idle_offset_y = int(3 * math.sin(idle_progress * 3.14159) * npc_idle_direction)
         
+        # Miner NPC idle animation
+        miner_idle_timer += dt
+        if miner_idle_timer >= 2200:  # Slightly different timing for variety
+            miner_idle_direction *= -1
+            miner_idle_timer = 0
+        
+        # Miner smooth idle movement
+        miner_idle_progress = miner_idle_timer / 2200.0
+        miner_idle_offset_y = int(4 * math.sin(miner_idle_progress * 3.14159) * miner_idle_direction)
+        
         # Crafting
         if is_crafting:
             crafting_timer += dt
@@ -1081,15 +1433,20 @@ def main():
                     stone_rects.remove(mining_target_stone)
                     # Fix: Use a tuple of the Rect's values as the dictionary key
                     chopped_stones[(mining_target_stone.x, mining_target_stone.y, mining_target_stone.width, mining_target_stone.height)] = current_time
-                    add_item_to_inventory(assets["stone_item"])
-                    print("Mined a stone!")
+                    # Give ore if in dungeon, stone if in world
+                    if current_level == "dungeon":
+                        add_item_to_inventory(assets["ore_item"])
+                        print("Mined ore!")
+                    else:
+                        add_item_to_inventory(assets["stone_item"])
+                        print("Mined a stone!")
                 is_mining = False
                 is_swinging = False
                 mining_timer = 0
                 mining_target_stone = None
                 current_direction = "idle"
        
-        #RESPAWN LOGIC
+        # RESPAWN LOGIC
         # Fix: Convert keys back to Rects for collision checking
         for tree_rect_tuple, time_chopped in list(chopped_trees.items()):
             tree_rect = pygame.Rect(tree_rect_tuple)
@@ -1108,7 +1465,7 @@ def main():
             keys = pygame.key.get_pressed()
             dx, dy = handle_movement(keys)
             
-            if current_level == "world":
+            if current_level == "world" or current_level == "dungeon":
                 new_player_world_rect = get_player_world_rect().move(dx, dy)
                 if not handle_collision(new_player_world_rect):
                     map_offset_x += dx
@@ -1131,6 +1488,8 @@ def main():
         screen.fill((0, 0, 0))
         if current_level == "world":
             draw_world(screen, assets)
+        elif current_level == "dungeon":
+            draw_dungeon(screen, assets)
         else:
             screen.blit(assets["interiors"][current_house_index], (0, 0))
 
