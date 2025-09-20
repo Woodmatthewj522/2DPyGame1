@@ -168,6 +168,9 @@ def load_assets():
     leaf_image = pygame.transform.scale(sheet.subsurface(pygame.Rect(0, 0, 16, 16)), (25, 25))
     log_image_rect = pygame.Rect(4, 110, 24, 24)
     log_image = pygame.transform.scale(sheet.subsurface(log_image_rect), (TILE_SIZE, TILE_SIZE))
+    potion_image = pygame.Surface((TILE_SIZE, TILE_SIZE))
+    potion_image.fill((150, 0, 150))
+    potion_item = Item("Potion", potion_image)
 
     # Load UI icons
     backpack_icon = pygame.transform.scale(pygame.image.load("bag.png").convert_alpha(), (ICON_SIZE, ICON_SIZE))
@@ -219,6 +222,7 @@ def load_assets():
         "stone_item": stone_item,
         "stone_img": stone_image,
         "flower_item": flower_item,
+        "potion_item": potion_item,
     }
     return assets
 
@@ -508,12 +512,9 @@ def draw_crafting_panel(screen, assets, is_hovering):
     """Draws the crafting GUI with buttons for different items."""
     global axe_button_rect, pickaxe_button_rect, alchemy_tab_rect
 
-    if show_alchemy:
-        draw_alchemy_panel(screen, assets)
-        return  # don’t draw regular crafting buttons
-
     panel_rect = pygame.Rect(CRAFTING_X, CRAFTING_Y, CRAFTING_PANEL_WIDTH, CRAFTING_PANEL_HEIGHT)
     pygame.draw.rect(screen, (101, 67, 33), panel_rect)
+
     header_rect = pygame.Rect(CRAFTING_X, CRAFTING_Y, CRAFTING_PANEL_WIDTH, 40)
     pygame.draw.rect(screen, (50, 33, 16), header_rect)
     header_text = assets["small_font"].render("Crafting", True, (255, 255, 255))
@@ -530,12 +531,30 @@ def draw_crafting_panel(screen, assets, is_hovering):
     pickaxe_button_rect = pygame.Rect(CRAFTING_X + gap, axe_button_rect.bottom + gap, button_width, button_height)
     req_logs_pickaxe = 10
 
-    # Alchemy Button
+    # Alchemy Tab Button
     alchemy_tab_rect = pygame.Rect(CRAFTING_X + CRAFTING_PANEL_WIDTH - 120, CRAFTING_Y + 10, 100, 30)
     pygame.draw.rect(screen, (80, 80, 150), alchemy_tab_rect)
     alchemy_text = assets["small_font"].render("Alchemy", True, (255, 255, 255))
     screen.blit(alchemy_text, alchemy_text.get_rect(center=alchemy_tab_rect.center))
 
+    buttons = [
+        (axe_button_rect, "axe", req_logs_axe, assets["axe_item"]),
+        (pickaxe_button_rect, "pickaxe", req_logs_pickaxe, assets["pickaxe_item"])
+    ]
+
+    for rect, item_name, req_logs, item_obj in buttons:
+        can_craft = log_count >= req_logs
+        color = (0, 150, 0) if can_craft else (70, 70, 70)
+        if is_hovering == item_name:
+            text_to_display = f"{item_obj.name}: {log_count}/{req_logs} Logs"
+            color = (0, 100, 0) if can_craft else (50, 50, 50)
+        else:
+            text_to_display = f"Craft {item_obj.name}"
+
+        pygame.draw.rect(screen, color, rect)
+        pygame.draw.rect(screen, (150, 150, 150), rect, 2)
+        text_surface = assets["small_font"].render(text_to_display, True, (255, 255, 255))
+        screen.blit(text_surface, text_surface.get_rect(center=rect.center))
 
 
     buttons = [
@@ -582,13 +601,13 @@ def draw_equipment_panel(screen, assets):
 
 
 def draw_alchemy_panel(screen, assets):
+    global potion_button_rect
     panel_rect = pygame.Rect(CRAFTING_X, CRAFTING_Y, CRAFTING_PANEL_WIDTH, CRAFTING_PANEL_HEIGHT)
-    pygame.draw.rect(screen, (70, 40, 90), panel_rect)  # purple-ish background
+    pygame.draw.rect(screen, (70, 40, 90), panel_rect)
     header_text = assets["small_font"].render("Alchemy", True, (255, 255, 255))
     screen.blit(header_text, header_text.get_rect(centerx=panel_rect.centerx, top=CRAFTING_Y + 10))
 
-    # Example buttons inside alchemy
-    # You can expand this later with real potion recipes
+    # Potion button
     potion_button_rect = pygame.Rect(CRAFTING_X + 20, CRAFTING_Y + 50, 150, 40)
     pygame.draw.rect(screen, (100, 100, 200), potion_button_rect)
     potion_text = assets["small_font"].render("Make Potion", True, (255, 255, 255))
@@ -672,7 +691,6 @@ def setup_colliders():
     leaf_tiles.clear()
     house_list.clear()
     stone_rects.clear()
-
     # DO NOT put pygame.init() inside here, it's already done in the main init() function
     # The redundant screen and clock initialization has been removed.
 
@@ -717,11 +735,12 @@ def main():
     """Main game loop."""
     global map_offset_x, map_offset_y, current_level, current_house_index
     global player_frame_index, player_frame_timer, current_direction, last_direction
-    global show_inventory, show_crafting, show_equipment
+    global show_inventory, show_crafting, show_equipment, show_alchemy
     global is_chopping, chopping_timer, chopping_target_tree, is_swinging
     global is_crafting, crafting_timer, item_to_craft
     global is_mining, mining_timer, mining_target_stone
     global player_pos
+    global potion_button_rect
 
     # --- Initialize ---
     screen, clock = init()
@@ -732,6 +751,7 @@ def main():
     give_starting_items(assets)
     HOUSE_SPAWN_OFFSET_X = -73
     HOUSE_SPAWN_OFFSET_Y = -52  
+    potion_button_rect = None
 
     # Store a larger player size for indoors
     PLAYER_SIZE_INDOOR = 150
@@ -843,32 +863,36 @@ def main():
 
 
     
-            # --- Mouse Button Handling (Crafting / Equipment / Inventory) ---
             if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
-                # Crafting
                 if show_crafting and not is_crafting:
-                    if axe_button_rect and axe_button_rect.collidepoint(event.pos):
-                        if get_item_count("Log") >= 5:
-                            is_crafting = True
-                            crafting_timer = 0
-                            item_to_craft = assets["axe_item"]
-                            remove_item_from_inventory("Log", 5)
-                            print(f"Crafting an {item_to_craft.name}...")
-                        else:
-                            print("Not enough logs!")
-                    elif pickaxe_button_rect and pickaxe_button_rect.collidepoint(event.pos):
-                        if get_item_count("Log") >= 10:
-                            is_crafting = True
-                            crafting_timer = 0
-                            item_to_craft = assets["pickaxe_item"]
-                            remove_item_from_inventory("Log", 10)
-                            print(f"Crafting a {item_to_craft.name}...")
-                        else:
-                            print("Not enough logs!")
-                    if event.type == pygame.MOUSEBUTTONDOWN:
-                        if event.button == 1:  # left click
-                            if alchemy_tab_rect and alchemy_tab_rect.collidepoint(mouse_pos):
-                                show_alchemy = True
+                    # --- Switch to Alchemy panel ---
+                    if alchemy_tab_rect and alchemy_tab_rect.collidepoint(event.pos):
+                        show_alchemy = True
+                    else:
+                        show_alchemy = False  # click outside tab goes back to normal crafting
+
+                    # --- Crafting buttons ---
+                    if not show_alchemy:  # only check axe/pickaxe when not in alchemy panel
+                        if axe_button_rect.collidepoint(event.pos):
+                            if get_item_count("Log") >= 5:
+                                is_crafting = True
+                                crafting_timer = 0
+                                item_to_craft = assets["axe_item"]
+                                remove_item_from_inventory("Log", 5)
+                                print("Crafting an Axe...")
+                            else:
+                                print("Not enough logs!")
+                        elif pickaxe_button_rect.collidepoint(event.pos):
+                            if get_item_count("Log") >= 10:
+                                is_crafting = True
+                                crafting_timer = 0
+                                item_to_craft = assets["pickaxe_item"]
+                                remove_item_from_inventory("Log", 10)
+                                print("Crafting a Pickaxe...")
+                            else:
+                                print("Not enough logs!")
+
+
                 # Equipment
                 if show_equipment:
                     weapon_slot_rect = pygame.Rect(EQUIPMENT_X + EQUIPMENT_GAP, EQUIPMENT_Y + 40 + EQUIPMENT_GAP,
@@ -1015,7 +1039,11 @@ def main():
         if show_inventory:
             draw_inventory(screen, assets)
         if show_crafting:
-            draw_crafting_panel(screen, assets, is_hovering)
+            if show_alchemy:
+                draw_alchemy_panel(screen, assets)
+            else:
+                draw_crafting_panel(screen, assets, is_hovering)
+
         if show_equipment:
             draw_equipment_panel(screen, assets)
 
