@@ -19,8 +19,20 @@ CHOPPING_DURATION = 3000
 RESPAWN_TIME = 120000  # 2 mins
 MINING_DURATION = 2000  # ms
 
+# Combat constants
+COMBAT_RANGE = 80
+COMBAT_COOLDOWN = 1000  # ms between attacks
+ENEMY_SPAWN_RATE = 0.02  # chance per frame in dungeon
+MAX_ENEMIES = 8
+ENEMY_SPEED = 2
+ENEMY_AGGRO_RANGE = 150
+ENEMY_ATTACK_RANGE = 60
+ENEMY_ATTACK_COOLDOWN = 1500
+
 # Player constants
 PLAYER_SIZE_INDOOR = 80
+PLAYER_MAX_HEALTH = 100
+PLAYER_BASE_DAMAGE = 15
 
 # Inventory GUI constants
 INVENTORY_SLOT_SIZE = 40
@@ -51,16 +63,187 @@ DUNGEON_SIZE = 30
 DUNGEON_SPAWN_X = 5 * TILE_SIZE
 DUNGEON_SPAWN_Y = 5 * TILE_SIZE
 
-# --- ITEM CLASS ---
+# --- CLASSES ---
 class Item:
-    def __init__(self, name, image, count=1, category=None):
+    def __init__(self, name, image, count=1, category=None, damage=0):
         self.name = name
         self.image = image
         self.count = count
         self.category = category
+        self.damage = damage
+
+class Player:
+    def __init__(self):
+        self.max_health = PLAYER_MAX_HEALTH
+        self.health = self.max_health
+        self.damage = PLAYER_BASE_DAMAGE
+        self.level = 1
+        self.experience = 0
+        self.experience_to_next = 100
+        self.last_attack_time = 0
+        self.is_invulnerable = False
+        self.invulnerability_timer = 0
+        self.invulnerability_duration = 1000  # 1 second
+        
+    def take_damage(self, damage_amount, current_time):
+        if not self.is_invulnerable:
+            self.health -= damage_amount
+            self.is_invulnerable = True
+            self.invulnerability_timer = current_time
+            if self.health <= 0:
+                self.health = 0
+                return True  # Player died
+        return False
+    
+    def heal(self, heal_amount):
+        self.health = min(self.max_health, self.health + heal_amount)
+    
+    def gain_experience(self, exp_amount):
+        old_level = self.level
+        self.experience += exp_amount
+        if self.experience >= self.experience_to_next:
+            self.level_up()
+            # Trigger level up visual feedback
+            global show_level_up, level_up_timer, level_up_text
+            show_level_up = True
+            level_up_timer = 0
+            level_up_text = f"LEVEL UP! Level {self.level}"
+    
+    def level_up(self):
+        self.level += 1
+        self.experience -= self.experience_to_next
+        self.experience_to_next = int(self.experience_to_next * 1.2)  # More gradual scaling
+        
+        # Level up bonuses - scale better at higher levels
+        health_bonus = 15 + (self.level * 2)  # Increases more each level
+        damage_bonus = 3 + (self.level // 2)  # Every 2 levels get extra damage
+        
+        self.max_health += health_bonus
+        self.health = self.max_health  # Full heal on level up
+        self.damage += damage_bonus
+        
+        print(f"LEVEL UP! Now level {self.level}")
+        print(f"Health: +{health_bonus} (Total: {self.max_health})")
+        print(f"Damage: +{damage_bonus} (Total: {self.damage})")
+        print(f"Next level: {self.experience_to_next} XP needed")
+    
+    def can_attack(self, current_time):
+        return current_time - self.last_attack_time >= COMBAT_COOLDOWN
+    
+    def attack(self, current_time):
+        if self.can_attack(current_time):
+            self.last_attack_time = current_time
+            return True
+        return False
+    
+    def update(self, dt, current_time):
+        # Update invulnerability
+        if self.is_invulnerable and current_time - self.invulnerability_timer >= self.invulnerability_duration:
+            self.is_invulnerable = False
+    
+    def get_total_damage(self, equipped_weapon):
+        weapon_damage = equipped_weapon.damage if equipped_weapon else 0
+        return self.damage + weapon_damage
+
+class Enemy:
+    def __init__(self, x, y, enemy_type="orc"):
+        self.rect = pygame.Rect(x, y, PLAYER_SIZE, PLAYER_SIZE)
+        self.type = enemy_type
+        self.health = 50 if enemy_type == "orc" else 30  # Slightly more HP
+        self.max_health = self.health
+        self.damage = 15 if enemy_type == "orc" else 10  # Slightly more damage
+        self.speed = ENEMY_SPEED
+        self.last_attack_time = 0
+        self.state = "idle"  # idle, chasing, attacking
+        self.target = None
+        # Scale XP rewards with player level for continued progression
+        base_xp = 30 if enemy_type == "orc" else 20
+        self.experience_reward = base_xp + (player.level * 5)  # More XP at higher levels
+        
+        # Animation
+        self.frame_index = 0
+        self.frame_timer = 0
+        self.frame_delay = 200
+        
+        # AI
+        self.path_timer = 0
+        self.random_direction = random.choice([(1, 0), (-1, 0), (0, 1), (0, -1)])
+    
+    def take_damage(self, damage_amount):
+        self.health -= damage_amount
+        return self.health <= 0
+    
+    def can_attack(self, current_time):
+        return current_time - self.last_attack_time >= ENEMY_ATTACK_COOLDOWN
+    
+    def attack_player(self, player_world_rect, current_time):
+        if self.can_attack(current_time) and self.rect.colliderect(player_world_rect.inflate(ENEMY_ATTACK_RANGE, ENEMY_ATTACK_RANGE)):
+            self.last_attack_time = current_time
+            return True
+        return False
+    
+    def update(self, dt, current_time, player_world_rect, obstacles):
+        # Animation
+        self.frame_timer += dt
+        if self.frame_timer >= self.frame_delay:
+            self.frame_index = (self.frame_index + 1) % 4
+            self.frame_timer = 0
+        
+        # AI Logic
+        distance_to_player = math.sqrt((self.rect.centerx - player_world_rect.centerx)**2 + 
+                                     (self.rect.centery - player_world_rect.centery)**2)
+        
+        if distance_to_player <= ENEMY_AGGRO_RANGE:
+            self.state = "chasing"
+            self.target = player_world_rect
+        elif distance_to_player > ENEMY_AGGRO_RANGE * 1.5:
+            self.state = "idle"
+            self.target = None
+        
+        # Movement
+        old_rect = self.rect.copy()
+        
+        if self.state == "chasing" and self.target:
+            # Move towards player
+            dx = self.target.centerx - self.rect.centerx
+            dy = self.target.centery - self.rect.centery
+            
+            if dx != 0 or dy != 0:
+                # Normalize movement
+                length = math.sqrt(dx*dx + dy*dy)
+                dx = (dx / length) * self.speed
+                dy = (dy / length) * self.speed
+                
+                self.rect.x += dx
+                self.rect.y += dy
+        
+        elif self.state == "idle":
+            # Random wandering
+            self.path_timer += dt
+            if self.path_timer >= 2000:  # Change direction every 2 seconds
+                self.random_direction = random.choice([(1, 0), (-1, 0), (0, 1), (0, -1), (0, 0)])
+                self.path_timer = 0
+            
+            dx, dy = self.random_direction
+            self.rect.x += dx * self.speed * 0.5
+            self.rect.y += dy * self.speed * 0.5
+        
+        # Collision detection with obstacles
+        collision = False
+        for obstacle in obstacles:
+            if self.rect.colliderect(obstacle):
+                collision = True
+                break
+        
+        if collision:
+            self.rect = old_rect
+            # If chasing and hit obstacle, try to go around
+            if self.state == "chasing":
+                self.random_direction = random.choice([(1, 0), (-1, 0), (0, 1), (0, -1)])
 
 # --- GAME STATE GLOBALS ---
 player_pos = pygame.Rect(WIDTH // 2, HEIGHT // 2, PLAYER_SIZE, PLAYER_SIZE)
+player = Player()
 map_offset_x = 0
 map_offset_y = 0
 current_level = "world"  # "world", "house", or "dungeon"
@@ -80,6 +263,11 @@ chopping_target_tree = None
 is_swinging = False
 swing_delay = 150
 idle_chop_delay = 500
+
+# Combat state
+is_attacking = False
+attack_animation_timer = 0
+attack_animation_duration = 300
 
 # Stone specific state
 is_mining = False
@@ -105,6 +293,12 @@ npc_idle_timer = 0
 npc_idle_offset_y = 0
 npc_idle_direction = 1
 
+# Vendor system
+show_vendor_gui = False
+vendor_tab = "buy"  # "buy" or "sell"
+buy_button_rects = {}
+sell_button_rects = {}
+
 # Miner NPC state
 show_miner_dialog = False
 miner_quest_active = False
@@ -129,13 +323,18 @@ leaf_tiles = []
 npc_rect = None
 miner_npc_rect = None
 gold_coins = []
+last_enemy_spawn = 0
+# Level up visual feedback
+level_up_timer = 0
+level_up_text = ""
+show_level_up = False
 
 # Dungeon objects
 dungeon_portal = None
 dungeon_walls = []
 dungeon_enemies = []
 dungeon_exit = None
-
+enemies = []
 # Crafting button rects
 axe_button_rect = None
 pickaxe_button_rect = None
@@ -157,7 +356,7 @@ def init():
     """Initializes Pygame and sets up the screen."""
     pygame.init()
     screen = pygame.display.set_mode((WIDTH, HEIGHT))
-    pygame.display.set_caption("Not Pokemon")
+    pygame.display.set_caption("Not Pokemon - Enhanced")
     return screen, pygame.time.Clock()
 
 # --- LOAD ASSETS ---
@@ -211,6 +410,32 @@ def load_chopping_frames():
             "down": [fallback_frame]
         }
     return chopping_frames
+
+def load_enemy_frames():
+    """Loads and scales enemy frames."""
+    try:
+        orc_sheet = pygame.image.load("orc-attack01.png").convert_alpha()
+        orc_frames = []
+
+        total_frames = 6  # <-- your sheet has 6 frames
+        frame_width = orc_sheet.get_width() // total_frames
+        frame_height = orc_sheet.get_height()
+
+        for i in range(total_frames):
+            frame_rect = pygame.Rect(i * frame_width, 0, frame_width, frame_height)
+            frame = pygame.transform.scale(frame_rect_to_surface(orc_sheet, frame_rect), (PLAYER_SIZE * 4, PLAYER_SIZE * 4))
+            orc_frames.append(frame)
+
+        return {"orc": orc_frames}
+
+    except Exception as e:
+        print("Error loading enemy frames:", e)
+        return {}
+    
+def frame_rect_to_surface(sheet, rect):
+    """Helper to extract a subsurface safely."""
+    return sheet.subsurface(rect).copy()
+
 
 def load_assets():
     """Loads all game assets and defines Item objects."""
@@ -329,15 +554,13 @@ def load_assets():
     except:
         portal_image = create_fallback_surface((50, 50), (64, 0, 128))
 
-
-    # Load images instead of creating fallback surfaces
-    dungeon_wall_image = pygame.image.load("wall.png").convert_alpha()
-    dungeon_floor_image = pygame.image.load("caveFloor.png").convert_alpha()
-
-    # Scale them to your tile size (important if your images aren’t already TILE_SIZE x TILE_SIZE)
-    dungeon_wall_image = pygame.transform.scale(dungeon_wall_image, (TILE_SIZE, TILE_SIZE))
-    dungeon_floor_image = pygame.transform.scale(dungeon_floor_image, (TILE_SIZE, TILE_SIZE))
-
+    # Load dungeon images
+    try:
+        dungeon_wall_image = pygame.transform.scale(pygame.image.load("wall.png").convert_alpha(), (TILE_SIZE, TILE_SIZE))
+        dungeon_floor_image = pygame.transform.scale(pygame.image.load("caveFloor.png").convert_alpha(), (TILE_SIZE, TILE_SIZE))
+    except:
+        dungeon_wall_image = create_fallback_surface((TILE_SIZE, TILE_SIZE), (64, 64, 64))
+        dungeon_floor_image = create_fallback_surface((TILE_SIZE, TILE_SIZE), (32, 32, 32))
 
     # Interior images
     try:
@@ -350,10 +573,10 @@ def load_assets():
         interior2 = create_fallback_surface((WIDTH, HEIGHT), (139, 69, 19))
         interiors = [interior1, interior2]
 
-    # Define Item objects
+    # Define Item objects with damage values
     log_item = Item("Log", log_image)
-    axe_item = Item("Axe", axe_image, category="Weapon")
-    pickaxe_item = Item("Pickaxe", pickaxe_image, category="Weapon")
+    axe_item = Item("Axe", axe_image, category="Weapon", damage=20)
+    pickaxe_item = Item("Pickaxe", pickaxe_image, category="Weapon", damage=15)
     stone_item = Item("Stone", stone_image)
     ore_item = Item("Ore", ore_image)
     flower_item = Item("Flower", flower_images[0])
@@ -373,6 +596,7 @@ def load_assets():
         "dungeon_floor": dungeon_floor_image,
         "font": pygame.font.SysFont(None, 36),
         "small_font": pygame.font.SysFont(None, 24),
+        "large_font": pygame.font.SysFont(None, 48),
         "backpack_icon": backpack_icon,
         "crafting_icon": crafting_icon,
         "equipment_icon": equipment_icon,
@@ -433,6 +657,7 @@ def setup_dungeon():
                 offset = (TILE_SIZE - (TILE_SIZE // 2)) // 2
                 ore_rect = pygame.Rect(x + offset, y + offset, TILE_SIZE // 2, TILE_SIZE // 2)
                 stone_rects.append(ore_rect)
+    
     # Create exit portal in the bottom-right area
     dungeon_exit = pygame.Rect((DUNGEON_SIZE-5) * TILE_SIZE, (DUNGEON_SIZE-5) * TILE_SIZE, TILE_SIZE * 2, TILE_SIZE * 2)
 
@@ -530,7 +755,89 @@ def setup_colliders():
 def give_starting_items(assets):
     """Adds initial items to the inventory."""
     add_item_to_inventory(assets["potion_item"])
+    add_item_to_inventory(assets["potion_item"])
+    add_item_to_inventory(assets["potion_item"])
     add_item_to_inventory(assets["axe_item"])
+
+def spawn_enemy_in_dungeon():
+    global last_enemy_spawn, enemies
+
+    current_time = pygame.time.get_ticks()
+    if current_time - last_enemy_spawn < 3000:
+        return  # too soon, don't spawn
+
+    x = random.randint(5, 25) * TILE_SIZE
+    y = random.randint(5, 25) * TILE_SIZE
+    enemy = Enemy(x, y, "orc")
+    enemies.append(enemy)
+
+    last_enemy_spawn = current_time  # <-- update after spawning
+
+    
+    # Find a valid spawn location
+    for _ in range(20):  # Try 20 times to find a valid spot
+        x = random.randint(3, DUNGEON_SIZE - 3) * TILE_SIZE + random.randint(-20, 20)
+        y = random.randint(3, DUNGEON_SIZE - 3) * TILE_SIZE + random.randint(-20, 20)
+        
+        enemy_rect = pygame.Rect(x, y, PLAYER_SIZE, PLAYER_SIZE)
+        
+        # Check if spawn location is valid (not in walls, not too close to player)
+        wall_collision = any(enemy_rect.colliderect(wall) for wall in dungeon_walls)
+        ore_collision = any(enemy_rect.colliderect(ore) for ore in stone_rects)
+        player_world_rect = get_player_world_rect()
+        too_close_to_player = enemy_rect.colliderect(player_world_rect.inflate(150, 150))
+        
+        if not wall_collision and not ore_collision and not too_close_to_player:
+            enemy = Enemy(x, y, "orc")
+            enemies.append(enemy)
+            last_enemy_spawn = current_time
+            print(f"Spawned orc at ({x}, {y})")
+            break
+
+def handle_combat(current_time):
+    """Handles combat between player and enemies."""
+    global is_attacking, attack_animation_timer
+    
+    player_world_rect = get_player_world_rect()
+    equipped_weapon = equipment_slots.get("weapon")
+    
+    # Handle player attacking enemies
+    if is_attacking:
+        attack_animation_timer += pygame.time.Clock().get_time()
+        if attack_animation_timer >= attack_animation_duration:
+            is_attacking = False
+            attack_animation_timer = 0
+        
+        # Check if any enemies are in range and deal damage
+        player_damage = player.get_total_damage(equipped_weapon)
+        attack_rect = player_world_rect.inflate(COMBAT_RANGE, COMBAT_RANGE)
+        
+        for enemy in enemies[:]:  # Use slice to avoid modification during iteration
+            if attack_rect.colliderect(enemy.rect):
+                if enemy.take_damage(player_damage):
+                    # Enemy died
+                    player.gain_experience(enemy.experience_reward)
+                    enemies.remove(enemy)
+                    print(f"Defeated {enemy.type}! Gained {enemy.experience_reward} XP")
+    
+    # Handle enemies attacking player
+    for enemy in enemies:
+        if enemy.attack_player(player_world_rect, current_time):
+            if player.take_damage(enemy.damage, current_time):
+                print("You died!")
+                # Reset player position or handle death
+                global current_level
+                if current_level == "dungeon":
+                    # Respawn outside dungeon
+                    current_level = "world"
+                    portal_x = 25 * TILE_SIZE
+                    portal_y = 38 * TILE_SIZE
+                    global map_offset_x, map_offset_y
+                    map_offset_x = portal_x - WIDTH // 2
+                    map_offset_y = portal_y - HEIGHT // 2 + 100
+                    player_pos.center = (WIDTH // 2, HEIGHT // 2)
+                    player.health = player.max_health // 2  # Respawn with half health
+                    enemies.clear()  # Clear all enemies
 
 # --- INVENTORY/CRAFTING/EQUIPMENT LOGIC ---
 def add_item_to_inventory(item_to_add):
@@ -547,7 +854,7 @@ def add_item_to_inventory(item_to_add):
     for row in range(4):
         for col in range(4):
             if inventory[row][col] is None:
-                new_item = Item(item_to_add.name, item_to_add.image, category=item_to_add.category)
+                new_item = Item(item_to_add.name, item_to_add.image, category=item_to_add.category, damage=item_to_add.damage)
                 inventory[row][col] = new_item
                 return True
     return False
@@ -602,12 +909,194 @@ def unequip_item():
     return False
 
 # --- DRAWING FUNCTIONS ---
+def draw_health_bar(screen, x, y, current_health, max_health, width=100, height=10):
+    """Draws a health bar at the specified position."""
+    # Background (red)
+    bg_rect = pygame.Rect(x, y, width, height)
+    pygame.draw.rect(screen, (139, 0, 0), bg_rect)
+    
+    # Health (green)
+    health_ratio = max(0, current_health / max_health)
+    health_width = int(width * health_ratio)
+    health_rect = pygame.Rect(x, y, health_width, height)
+    pygame.draw.rect(screen, (0, 139, 0), health_rect)
+    
+    # Border
+    pygame.draw.rect(screen, (255, 255, 255), bg_rect, 1)
+
+def draw_player_stats(screen, assets):
+    """Draws player stats in the top-left corner."""
+    y_offset = 10
+    
+    # Health bar
+    draw_health_bar(screen, 10, y_offset, player.health, player.max_health, 150, 15)
+    health_text = f"Health: {player.health}/{player.max_health}"
+    text_surf = assets["small_font"].render(health_text, True, (255, 255, 255))
+    screen.blit(text_surf, (170, y_offset))
+    y_offset += 25
+    
+    # Level and damage info
+    equipped_weapon = equipment_slots.get("weapon")
+    total_damage = player.get_total_damage(equipped_weapon)
+    level_text = f"Level {player.level} - Damage: {total_damage}"
+    text_surf = assets["small_font"].render(level_text, True, (255, 255, 255))
+    screen.blit(text_surf, (10, y_offset))
+
+def draw_level_up_notification(screen, assets):
+    """Draws level up notification in the center of screen."""
+    if not show_level_up:
+        return
+    
+    # Create pulsing effect based on timer
+    pulse = math.sin(level_up_timer / 200.0) * 0.3 + 1.0
+    
+    # Level up text
+    level_text = assets["large_font"].render(level_up_text, True, (255, 215, 0))  # Gold
+    text_rect = level_text.get_rect(center=(WIDTH // 2, HEIGHT // 2 - 50))
+    
+    # Scale text for pulse effect
+    scaled_width = int(text_rect.width * pulse)
+    scaled_height = int(text_rect.height * pulse)
+    scaled_text = pygame.transform.scale(level_text, (scaled_width, scaled_height))
+    scaled_rect = scaled_text.get_rect(center=(WIDTH // 2, HEIGHT // 2 - 50))
+    
+    # Background glow effect
+    glow_rect = scaled_rect.inflate(40, 20)
+    glow_surf = pygame.Surface((glow_rect.width, glow_rect.height), pygame.SRCALPHA)
+    glow_surf.fill((255, 215, 0, 50))
+    screen.blit(glow_surf, glow_rect)
+    
+    screen.blit(scaled_text, scaled_rect)
+    
+    # Stats increase text
+    stats_text = f"Health +{15 + (player.level * 2)} | Damage +{3 + (player.level // 2)}"
+    stats_surf = assets["small_font"].render(stats_text, True, (200, 255, 200))
+    stats_rect = stats_surf.get_rect(center=(WIDTH // 2, HEIGHT // 2 + 10))
+    screen.blit(stats_surf, stats_rect)
+
+def draw_experience_bar(screen, assets):
+    """Draws the experience/level progress bar at the bottom of the screen."""
+    bar_height = 25
+    bar_y = HEIGHT - bar_height - 5
+    bar_width = WIDTH - 20
+    bar_x = 10
+    
+    # Background
+    bg_rect = pygame.Rect(bar_x, bar_y, bar_width, bar_height)
+    pygame.draw.rect(screen, (40, 40, 40), bg_rect)
+    pygame.draw.rect(screen, (255, 255, 255), bg_rect, 2)
+    
+    # Experience progress
+    if player.experience_to_next > 0:
+        exp_ratio = player.experience / player.experience_to_next
+        exp_width = int(bar_width * exp_ratio)
+        exp_rect = pygame.Rect(bar_x, bar_y, exp_width, bar_height)
+        
+        # Gradient effect for XP bar
+        for i in range(bar_height):
+            color_intensity = 100 + int(155 * (1 - i / bar_height))
+            line_color = (0, 0, color_intensity)
+            if exp_width > 0:
+                pygame.draw.line(screen, line_color, 
+                               (bar_x, bar_y + i), 
+                               (bar_x + exp_width, bar_y + i))
+    
+    # Text overlay
+    exp_text = f"Level {player.level} - XP: {player.experience}/{player.experience_to_next}"
+    text_surf = assets["small_font"].render(exp_text, True, (255, 255, 255))
+    text_rect = text_surf.get_rect(center=(WIDTH // 2, bar_y + bar_height // 2))
+    screen.blit(text_surf, text_rect)
+    
+    # Level indicator on the left
+    level_text = f"LVL {player.level}"
+    level_surf = assets["font"].render(level_text, True, (255, 215, 0))  # Gold color
+    screen.blit(level_surf, (bar_x + 5, bar_y + 2))
+    
+    # Next level indicator on the right
+    next_level_text = f"Next: {player.experience_to_next - player.experience}"
+    next_surf = assets["small_font"].render(next_level_text, True, (200, 200, 200))
+    next_rect = next_surf.get_rect(right=bar_x + bar_width - 5, centery=bar_y + bar_height // 2)
+    screen.blit(next_surf, next_rect)
+    """Draws level up notification in the center of screen."""
+    if not show_level_up:
+        return
+    
+    # Create pulsing effect based on timer
+    pulse = math.sin(level_up_timer / 200.0) * 0.3 + 1.0
+    
+    # Level up text
+    level_text = assets["large_font"].render(level_up_text, True, (255, 215, 0))  # Gold
+    text_rect = level_text.get_rect(center=(WIDTH // 2, HEIGHT // 2 - 50))
+    
+    # Scale text for pulse effect
+    scaled_width = int(text_rect.width * pulse)
+    scaled_height = int(text_rect.height * pulse)
+    scaled_text = pygame.transform.scale(level_text, (scaled_width, scaled_height))
+    scaled_rect = scaled_text.get_rect(center=(WIDTH // 2, HEIGHT // 2 - 50))
+    
+    # Background glow effect
+    glow_rect = scaled_rect.inflate(40, 20)
+    glow_surf = pygame.Surface((glow_rect.width, glow_rect.height), pygame.SRCALPHA)
+    glow_surf.fill((255, 215, 0, 50))
+    screen.blit(glow_surf, glow_rect)
+    
+    screen.blit(scaled_text, scaled_rect)
+    
+
+    # Stats increase text
+    stats_text = f"Health +{15 + (player.level * 2)} | Damage +{3 + (player.level // 2)}"
+    stats_surf = assets["small_font"].render(stats_text, True, (200, 255, 200))
+    stats_rect = stats_surf.get_rect(center=(WIDTH // 2, HEIGHT // 2 + 10))
+    screen.blit(stats_surf, stats_rect)
+    """Draws the experience/level progress bar at the bottom of the screen."""
+    bar_height = 25
+    bar_y = HEIGHT - bar_height - 5
+    bar_width = WIDTH - 20
+    bar_x = 10
+    
+    # Background
+    bg_rect = pygame.Rect(bar_x, bar_y, bar_width, bar_height)
+    pygame.draw.rect(screen, (40, 40, 40), bg_rect)
+    pygame.draw.rect(screen, (255, 255, 255), bg_rect, 2)
+    
+    # Experience progress
+    if player.experience_to_next > 0:
+        exp_ratio = player.experience / player.experience_to_next
+        exp_width = int(bar_width * exp_ratio)
+        exp_rect = pygame.Rect(bar_x, bar_y, exp_width, bar_height)
+        
+        # Gradient effect for XP bar
+        for i in range(bar_height):
+            color_intensity = 100 + int(155 * (1 - i / bar_height))
+            line_color = (0, 0, color_intensity)
+            if exp_width > 0:
+                pygame.draw.line(screen, line_color, 
+                               (bar_x, bar_y + i), 
+                               (bar_x + exp_width, bar_y + i))
+    
+    # Text overlay
+    exp_text = f"Level {player.level} - XP: {player.experience}/{player.experience_to_next}"
+    text_surf = assets["small_font"].render(exp_text, True, (255, 255, 255))
+    text_rect = text_surf.get_rect(center=(WIDTH // 2, bar_y + bar_height // 2))
+    screen.blit(text_surf, text_rect)
+    
+    # Level indicator on the left
+    level_text = f"LVL {player.level}"
+    level_surf = assets["font"].render(level_text, True, (255, 215, 0))  # Gold color
+    screen.blit(level_surf, (bar_x + 5, bar_y + 2))
+    
+    # Next level indicator on the right
+    next_level_text = f"Next: {player.experience_to_next - player.experience}"
+    next_surf = assets["small_font"].render(next_level_text, True, (200, 200, 200))
+    next_rect = next_surf.get_rect(right=bar_x + bar_width - 5, centery=bar_y + bar_height // 2)
+    screen.blit(next_surf, next_rect)
+
 def draw_player_coordinates(screen, font):
-    """Draws the player's current world coordinates in the top-left corner."""
+    """Draws the player's current world coordinates in the bottom-left corner."""
     player_rect = get_player_world_rect()
     coord_text = f"Player: ({player_rect.x}, {player_rect.y}) - Level: {current_level}"
     text_surf = font.render(coord_text, True, (255, 255, 255))
-    screen.blit(text_surf, (10, 10))
+    screen.blit(text_surf, (10, HEIGHT - 30))
 
 def draw_world(screen, assets):
     """Draws the outdoor world and its objects."""
@@ -658,23 +1147,15 @@ def draw_world(screen, assets):
         miner_animated_y = miner_npc_rect.y + miner_idle_offset_y
         screen.blit(assets["miner_image"], (miner_npc_rect.x - map_offset_x, miner_animated_y - map_offset_y))
 
-def draw_dungeon(screen, assets):
-    dungeon_width = 30   # number of tiles across
-    dungeon_height = 30   # number of tiles down
-
-    # Load floor tile only once
-    if "dungeon_floor" not in assets:
-        assets["dungeon_floor"] = pygame.image.load("caveFloor.png").convert_alpha()
-        assets["dungeon_floor"] = pygame.transform.scale(
-            assets["dungeon_floor"], (TILE_SIZE, TILE_SIZE)
-        )
-
-    floor_tile = assets["dungeon_floor"]
+def draw_dungeon(screen, assets, enemy_frames):
+    """Draws the dungeon level with enemies."""
+    dungeon_width = 30
+    dungeon_height = 30
 
     # Draw floor tiles
     for x in range(dungeon_width):
         for y in range(dungeon_height):
-            screen.blit(floor_tile, (x * TILE_SIZE - map_offset_x, y * TILE_SIZE - map_offset_y))
+            screen.blit(assets["dungeon_floor"], (x * TILE_SIZE - map_offset_x, y * TILE_SIZE - map_offset_y))
 
     # Draw dungeon walls
     for wall in dungeon_walls:
@@ -683,13 +1164,189 @@ def draw_dungeon(screen, assets):
     # Draw ore deposits
     for ore in stone_rects:
         screen.blit(assets["ore_img"], (ore.x - map_offset_x, ore.y - map_offset_y))
+    for enemy in enemies:
+        print("Drawing enemy:", enemy.type, enemy.frame_index, enemy.rect)
+        enemy_screen_rect = world_to_screen_rect(enemy.rect)
+    ...
+
+    # Draw enemies
+    for enemy in enemies:
+        enemy_screen_rect = world_to_screen_rect(enemy.rect)
+        if 0 <= enemy_screen_rect.x <= WIDTH and 0 <= enemy_screen_rect.y <= HEIGHT:  # Only draw if on screen
+            frame = enemy_frames[enemy.type][enemy.frame_index]
+            screen.blit(frame, enemy_screen_rect)
+            
+            # Draw enemy health bar
+            if enemy.health < enemy.max_health:
+                bar_y = enemy_screen_rect.y - 10
+                draw_health_bar(screen, enemy_screen_rect.x, bar_y, enemy.health, enemy.max_health, enemy.rect.width, 5)
     
     # Draw exit portal
     if dungeon_exit:
         screen.blit(assets["portal"], (dungeon_exit.x - map_offset_x, dungeon_exit.y - map_offset_y))
 
+def get_shop_items(assets):
+    """Returns the items available in the shop with their prices."""
+    return {
+        "Potion": {"item": assets["potion_item"], "buy_price": 15, "sell_price": 8},
+        "Log": {"item": assets["log_item"], "buy_price": 5, "sell_price": 2},
+        "Stone": {"item": assets["stone_item"], "buy_price": 8, "sell_price": 3},
+        "Ore": {"item": assets["ore_item"], "buy_price": 20, "sell_price": 12},
+        "Flower": {"item": assets["flower_item"], "buy_price": 10, "sell_price": 4},
+    }
 
-def draw_tooltip(screen, font, text, pos):
+def draw_vendor_gui(screen, assets):
+    """Draws the vendor/shop GUI."""
+    if not show_vendor_gui:
+        return
+    
+    global buy_button_rects, sell_button_rects
+    buy_button_rects = {}
+    sell_button_rects = {}
+    
+    # Main panel
+    panel_width = 600
+    panel_height = 400
+    panel_x = (WIDTH - panel_width) // 2
+    panel_y = (HEIGHT - panel_height) // 2
+    panel_rect = pygame.Rect(panel_x, panel_y, panel_width, panel_height)
+    
+    pygame.draw.rect(screen, (101, 67, 33), panel_rect)
+    pygame.draw.rect(screen, (255, 255, 255), panel_rect, 3)
+    
+    # Header
+    header_rect = pygame.Rect(panel_x, panel_y, panel_width, 40)
+    pygame.draw.rect(screen, (50, 33, 16), header_rect)
+    header_text = assets["font"].render("Marcus's Trading Post", True, (255, 215, 0))
+    screen.blit(header_text, header_text.get_rect(center=header_rect.center))
+    
+    # Tab buttons
+    tab_width = 80
+    tab_height = 30
+    tab_y = panel_y + 45
+    
+    buy_tab_rect = pygame.Rect(panel_x + 20, tab_y, tab_width, tab_height)
+    sell_tab_rect = pygame.Rect(panel_x + 110, tab_y, tab_width, tab_height)
+    
+    # Draw buy tab
+    buy_color = (0, 120, 0) if vendor_tab == "buy" else (60, 60, 60)
+    pygame.draw.rect(screen, buy_color, buy_tab_rect)
+    pygame.draw.rect(screen, (255, 255, 255), buy_tab_rect, 2)
+    buy_text = assets["small_font"].render("Buy", True, (255, 255, 255))
+    screen.blit(buy_text, buy_text.get_rect(center=buy_tab_rect.center))
+    
+    # Draw sell tab
+    sell_color = (120, 0, 0) if vendor_tab == "sell" else (60, 60, 60)
+    pygame.draw.rect(screen, sell_color, sell_tab_rect)
+    pygame.draw.rect(screen, (255, 255, 255), sell_tab_rect, 2)
+    sell_text = assets["small_font"].render("Sell", True, (255, 255, 255))
+    screen.blit(sell_text, sell_text.get_rect(center=sell_tab_rect.center))
+    
+    # Player coins display
+    coin_count = get_item_count("Coin")
+    coin_text = f"Coins: {coin_count}"
+    coin_surf = assets["small_font"].render(coin_text, True, (255, 215, 0))
+    screen.blit(coin_surf, (panel_x + panel_width - 120, tab_y + 5))
+    
+    # Content area
+    content_y = tab_y + tab_height + 10
+    content_height = panel_height - (content_y - panel_y) - 10
+    
+    shop_items = get_shop_items(assets)
+    
+    if vendor_tab == "buy":
+        draw_buy_content(screen, assets, panel_x, content_y, panel_width, shop_items, coin_count)
+    else:
+        draw_sell_content(screen, assets, panel_x, content_y, panel_width, shop_items)
+    
+    # Store tab rects for clicking
+    buy_button_rects["buy_tab"] = buy_tab_rect
+    buy_button_rects["sell_tab"] = sell_tab_rect
+
+def draw_buy_content(screen, assets, panel_x, content_y, panel_width, shop_items, coin_count):
+    """Draws the buy tab content."""
+    global buy_button_rects
+    
+    y_offset = content_y + 10
+    item_height = 50
+    
+    for item_name, item_data in shop_items.items():
+        item_rect = pygame.Rect(panel_x + 20, y_offset, panel_width - 40, item_height)
+        
+        # Can afford check
+        can_afford = coin_count >= item_data["buy_price"]
+        
+        # Item background
+        bg_color = (0, 80, 0) if can_afford else (80, 40, 40)
+        pygame.draw.rect(screen, bg_color, item_rect)
+        pygame.draw.rect(screen, (255, 255, 255), item_rect, 1)
+        
+        # Item icon
+        icon_rect = pygame.Rect(panel_x + 30, y_offset + 5, 40, 40)
+        item_image = pygame.transform.scale(item_data["item"].image, (40, 40))
+        screen.blit(item_image, icon_rect)
+        
+        # Item name and price
+        name_text = assets["small_font"].render(item_name, True, (255, 255, 255))
+        screen.blit(name_text, (panel_x + 80, y_offset + 10))
+        
+        price_text = assets["small_font"].render(f"Price: {item_data['buy_price']} coins", True, (255, 215, 0))
+        screen.blit(price_text, (panel_x + 80, y_offset + 25))
+        
+        # Buy button
+        buy_button = pygame.Rect(panel_x + panel_width - 120, y_offset + 10, 80, 30)
+        button_color = (0, 150, 0) if can_afford else (100, 100, 100)
+        pygame.draw.rect(screen, button_color, buy_button)
+        pygame.draw.rect(screen, (255, 255, 255), buy_button, 1)
+        
+        button_text = "Buy" if can_afford else "No Coins"
+        text_surf = assets["small_font"].render(button_text, True, (255, 255, 255))
+        screen.blit(text_surf, text_surf.get_rect(center=buy_button.center))
+        
+        buy_button_rects[item_name] = buy_button
+        y_offset += item_height + 5
+
+def draw_sell_content(screen, assets, panel_x, content_y, panel_width, shop_items):
+    """Draws the sell tab content."""
+    global sell_button_rects
+    
+    y_offset = content_y + 10
+    item_height = 50
+    
+    for item_name, item_data in shop_items.items():
+        player_count = get_item_count(item_name)
+        if player_count == 0:
+            continue  # Don't show items player doesn't have
+        
+        item_rect = pygame.Rect(panel_x + 20, y_offset, panel_width - 40, item_height)
+        
+        # Item background
+        pygame.draw.rect(screen, (80, 0, 0), item_rect)
+        pygame.draw.rect(screen, (255, 255, 255), item_rect, 1)
+        
+        # Item icon
+        icon_rect = pygame.Rect(panel_x + 30, y_offset + 5, 40, 40)
+        item_image = pygame.transform.scale(item_data["item"].image, (40, 40))
+        screen.blit(item_image, icon_rect)
+        
+        # Item name, count, and sell price
+        name_text = assets["small_font"].render(f"{item_name} (x{player_count})", True, (255, 255, 255))
+        screen.blit(name_text, (panel_x + 80, y_offset + 10))
+        
+        price_text = assets["small_font"].render(f"Sell for: {item_data['sell_price']} coins each", True, (255, 215, 0))
+        screen.blit(price_text, (panel_x + 80, y_offset + 25))
+        
+        # Sell button
+        sell_button = pygame.Rect(panel_x + panel_width - 120, y_offset + 10, 80, 30)
+        pygame.draw.rect(screen, (150, 0, 0), sell_button)
+        pygame.draw.rect(screen, (255, 255, 255), sell_button, 1)
+        
+        button_text = "Sell"
+        text_surf = assets["small_font"].render(button_text, True, (255, 255, 255))
+        screen.blit(text_surf, text_surf.get_rect(center=sell_button.center))
+        
+        sell_button_rects[item_name] = sell_button
+        y_offset += item_height + 5
     """Draw a tooltip at the specified position."""
     padding = 6
     text_surface = font.render(text, True, (255, 255, 255))
@@ -741,10 +1398,9 @@ def draw_npc_dialog(screen, assets):
             ]
     elif npc_quest_completed:
         dialog_lines = [
-            "Thank you for the potions! My unit is ready for battle!",
-            "I gave you your reward, 10 coins.",
-            "I have a friend down south that could use your help too.",
-            "Press [ESC] to close."
+            "Thanks for the potions! I've set up a trading post here.",
+            "I can buy and sell various goods you might need.",
+            "Press [SPACE] to open shop, or [ESC] to close."
         ]
 
     y_offset = 35
@@ -802,6 +1458,16 @@ def draw_miner_dialog(screen, assets):
         line_text = assets["small_font"].render(line, True, (255, 255, 255))
         screen.blit(line_text, (dialog_x + 10, dialog_y + y_offset))
         y_offset += 25
+def draw_tooltip(screen, font, text, position):
+    # Render text
+    tooltip_surface = font.render(text, True, (255, 255, 255))
+    tooltip_rect = tooltip_surface.get_rect(topleft=position)
+
+    # Draw background rectangle
+    pygame.draw.rect(screen, (0, 0, 0), tooltip_rect.inflate(6, 6))
+    
+    # Blit text on top
+    screen.blit(tooltip_surface, tooltip_rect)
 
 def draw_tooltip_for_nearby_objects(screen, font):
     """Draw a tooltip for interactive objects."""
@@ -901,6 +1567,15 @@ def draw_tooltip_for_nearby_objects(screen, font):
                 if stone_screen.collidepoint(mouse_pos):
                     tooltip_text = "Ore Deposit [e]"
                     tooltip_pos = (stone_screen.x, stone_screen.y)
+                    break
+
+        # Enemy tooltips on mouse hover
+        if tooltip_text is None:
+            for enemy in enemies:
+                enemy_screen = world_to_screen_rect(enemy.rect)
+                if enemy_screen.collidepoint(mouse_pos):
+                    tooltip_text = f"{enemy.type.title()} [SPACE to attack]"
+                    tooltip_pos = (enemy_screen.x, enemy_screen.y)
                     break
 
     # Draw the tooltip if we have text and position
@@ -1061,6 +1736,11 @@ def draw_equipment_panel(screen, assets):
     equipped_weapon = equipment_slots.get("weapon")
     if equipped_weapon:
         screen.blit(pygame.transform.scale(equipped_weapon.image, (EQUIPMENT_SLOT_SIZE, EQUIPMENT_SLOT_SIZE)), weapon_slot_rect)
+        
+        # Show weapon damage
+        damage_text = f"Damage: +{equipped_weapon.damage}"
+        damage_surface = assets["small_font"].render(damage_text, True, (255, 255, 255))
+        screen.blit(damage_surface, (weapon_slot_rect.x, weapon_slot_rect.bottom + 5))
 
 def draw_hud(screen, assets):
     """Draws the main HUD elements (icons)."""
@@ -1075,6 +1755,22 @@ def draw_hud(screen, assets):
         label_rect = label_text.get_rect(centerx=icon_rect.centerx, top=icon_rect.bottom + 5)
         screen.blit(icon, icon_rect)
         screen.blit(label_text, label_rect)
+
+def draw_combat_ui(screen, assets):
+    """Draws combat-related UI elements."""
+    if current_level == "dungeon":
+        # Show attack cooldown
+        current_time = pygame.time.get_ticks()
+        if not player.can_attack(current_time):
+            cooldown_remaining = COMBAT_COOLDOWN - (current_time - player.last_attack_time)
+            cooldown_text = f"Attack cooldown: {cooldown_remaining}ms"
+            text_surf = assets["small_font"].render(cooldown_text, True, (255, 255, 255))
+            screen.blit(text_surf, (WIDTH - 200, HEIGHT - 30))
+        
+        # Show enemy count
+        enemy_count_text = f"Enemies: {len(enemies)}"
+        text_surf = assets["small_font"].render(enemy_count_text, True, (255, 255, 255))
+        screen.blit(text_surf, (WIDTH - 120, 100))
 
 # --- MAIN GAME LOGIC ---
 def handle_movement(keys):
@@ -1116,6 +1812,7 @@ def handle_collision(new_world_rect):
         # Collide with ore deposits
         if any(new_world_rect.colliderect(r) for r in stone_rects):
             return True
+        # Don't collide with enemies for player movement - let them overlap
         return False
     else:
         # Indoor collisions
@@ -1128,6 +1825,18 @@ def check_house_entry(world_rect):
             return i
     return None
 
+def use_potion():
+    """Uses a potion from inventory to heal the player."""
+    if get_item_count("Potion") > 0:
+        remove_item_from_inventory("Potion", 1)
+        heal_amount = 50
+        player.heal(heal_amount)
+        print(f"Used potion! Healed {heal_amount} HP. Current health: {player.health}/{player.max_health}")
+        return True
+    else:
+        print("No potions available!")
+        return False
+
 def main():
     """Main game loop."""
     global map_offset_x, map_offset_y, current_level, current_house_index
@@ -1136,23 +1845,40 @@ def main():
     global is_chopping, chopping_timer, chopping_target_tree, is_swinging
     global is_crafting, crafting_timer, item_to_craft
     global is_mining, mining_timer, mining_target_stone
+    global is_attacking, attack_animation_timer
     global player_pos
     global show_npc_dialog, npc_quest_active, npc_quest_completed
     global show_miner_dialog, miner_quest_active, miner_quest_completed
     global npc_idle_timer, npc_idle_offset_y, npc_idle_direction
     global miner_idle_timer, miner_idle_offset_y, miner_idle_direction
+    global show_level_up, level_up_timer, level_up_text
+    global show_vendor_gui, vendor_tab
+    global enemies
+    global equipment_slots
 
     # Initialize
     screen, clock = init()
     assets = load_assets()
     player_frames = load_player_frames()
     chopping_frames = load_chopping_frames()
+    enemy_frames = load_enemy_frames()
     setup_colliders()
     give_starting_items(assets)
+
 
     while True:
         dt = clock.tick(60)
         current_time = pygame.time.get_ticks()
+
+        # Update player
+        player.update(dt, current_time)
+        
+        # Update level up notification timer
+        if show_level_up:
+            level_up_timer += dt
+            if level_up_timer > 3000:  # Show for 3 seconds
+                show_level_up = False
+                level_up_timer = 0
 
         # UI Hover State
         is_hovering = None
@@ -1167,6 +1893,24 @@ def main():
                 if potion_button_rect and potion_button_rect.collidepoint(mouse_pos):
                     is_hovering = "potion"
 
+        # Enemy spawning and updates in dungeon
+        if current_level == "dungeon":
+            # Spawn enemies more aggressively at start
+            if len(enemies) < 3:  # Always try to maintain at least 3 enemies
+                if random.random() < 0.1:  # 10% chance per frame
+                    spawn_enemy_in_dungeon()
+            elif random.random() < ENEMY_SPAWN_RATE:
+                spawn_enemy_in_dungeon()
+            
+            # Update enemies
+            player_world_rect = get_player_world_rect()
+            obstacles = dungeon_walls + stone_rects
+            for enemy in enemies:
+                enemy.update(dt, current_time, player_world_rect, obstacles)
+            
+            # Handle combat
+            handle_combat(current_time)
+
         # Event Handling
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
@@ -1174,6 +1918,17 @@ def main():
                 sys.exit()
             
             if event.type == pygame.KEYDOWN:
+                # Combat controls
+                if event.key == pygame.K_SPACE and current_level == "dungeon":
+                    if player.attack(current_time):
+                        is_attacking = True
+                        attack_animation_timer = 0
+                        print("Player attacks!")
+                
+                # Use potion
+                if event.key == pygame.K_h:
+                    use_potion()
+                
                 # Toggle UI panels
                 if event.key == pygame.K_i:
                     show_inventory = not show_inventory
@@ -1195,6 +1950,10 @@ def main():
                             map_offset_x = DUNGEON_SPAWN_X - WIDTH // 2
                             map_offset_y = DUNGEON_SPAWN_Y - HEIGHT // 2
                             player_pos.center = (WIDTH // 2, HEIGHT // 2)
+                            # Spawn some initial enemies when entering dungeon
+                            enemies.clear()
+                            for _ in range(3):  # Spawn 3 enemies initially
+                                spawn_enemy_in_dungeon()
                             
                         # Priority 2: Enter House
                         elif check_house_entry(player_world_rect) is not None:
@@ -1279,6 +2038,7 @@ def main():
                             map_offset_x = portal_x - WIDTH // 2
                             map_offset_y = portal_y - HEIGHT // 2 + 100
                             player_pos.center = (WIDTH // 2, HEIGHT // 2)
+                            enemies.clear()  # Clear enemies when exiting dungeon
                         elif equipment_slots["weapon"] and equipment_slots["weapon"].name == "Pickaxe":
                             for stone in list(stone_rects):
                                 if player_world_rect.colliderect(stone.inflate(20, 20)):
@@ -1320,6 +2080,11 @@ def main():
                         npc_quest_active = False
                         show_npc_dialog = False
                         print("Quest completed! You received 10 coins as a reward!")
+                    elif npc_quest_completed:
+                        # Open vendor shop
+                        show_npc_dialog = False
+                        show_vendor_gui = True
+                        vendor_tab = "buy"
                 
                 # Miner Dialog controls
                 if event.key == pygame.K_SPACE and show_miner_dialog:
@@ -1341,9 +2106,53 @@ def main():
                 elif event.key == pygame.K_ESCAPE and (show_npc_dialog or show_miner_dialog):
                     show_npc_dialog = False
                     show_miner_dialog = False
+                    
+                elif event.key == pygame.K_ESCAPE and show_vendor_gui:
+                    show_vendor_gui = False
 
             if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
-                if show_crafting and not is_crafting:
+                # Vendor GUI handling
+                if show_vendor_gui:
+                    # Tab switching
+                    if "buy_tab" in buy_button_rects and buy_button_rects["buy_tab"].collidepoint(event.pos):
+                        vendor_tab = "buy"
+                    elif "sell_tab" in buy_button_rects and buy_button_rects["sell_tab"].collidepoint(event.pos):
+                        vendor_tab = "sell"
+                    
+                    # Buy items
+                    elif vendor_tab == "buy":
+                        shop_items = get_shop_items(assets)
+                        coin_count = get_item_count("Coin")
+                        for item_name, button_rect in buy_button_rects.items():
+                            if item_name in ["buy_tab", "sell_tab"]:
+                                continue
+                            if button_rect.collidepoint(event.pos):
+                                item_data = shop_items[item_name]
+                                if coin_count >= item_data["buy_price"]:
+                                    # Buy the item
+                                    remove_item_from_inventory("Coin", item_data["buy_price"])
+                                    add_item_to_inventory(item_data["item"])
+                                    print(f"Bought {item_name} for {item_data['buy_price']} coins!")
+                                else:
+                                    print("Not enough coins!")
+                                break
+                    
+                    # Sell items
+                    elif vendor_tab == "sell":
+                        shop_items = get_shop_items(assets)
+                        for item_name, button_rect in sell_button_rects.items():
+                            if button_rect.collidepoint(event.pos):
+                                if get_item_count(item_name) > 0:
+                                    # Sell the item
+                                    remove_item_from_inventory(item_name, 1)
+                                    item_data = shop_items[item_name]
+                                    for _ in range(item_data["sell_price"]):
+                                        add_item_to_inventory(assets["coin_item"])
+                                    print(f"Sold {item_name} for {item_data['sell_price']} coins!")
+                                break
+                
+                # Crafting GUI handling
+                elif show_crafting and not is_crafting:
                     # Check tab clicks first
                     if smithing_tab_rect and smithing_tab_rect.collidepoint(event.pos):
                         crafting_tab = "smithing"
@@ -1524,23 +2333,60 @@ def main():
         if current_level == "world":
             draw_world(screen, assets)
         elif current_level == "dungeon":
-            draw_dungeon(screen, assets)
+            draw_dungeon(screen, assets, enemy_frames)
         else:
             screen.blit(assets["interiors"][current_house_index], (0, 0))
 
         # Determine the current size of the player for drawing
         player_size_current = player_pos.width
 
-        # Draw player
-        if is_chopping or is_mining:
-            scaled_frame = pygame.transform.scale(chopping_frames[last_direction][player_frame_index], (player_size_current, player_size_current))
-            screen.blit(scaled_frame, player_pos)
+        # Draw player with special effects
+        if is_attacking:
+            # Flash player white during attack
+            flash_frame = pygame.Surface((player_size_current, player_size_current))
+            flash_frame.fill((255, 255, 255))
+            if is_chopping or is_mining:
+                scaled_frame = pygame.transform.scale(chopping_frames[last_direction][player_frame_index], (player_size_current, player_size_current))
+            else:
+                frame_set = player_frames.get(current_direction, player_frames["idle"])
+                scaled_frame = pygame.transform.scale(frame_set[player_frame_index], (player_size_current, player_size_current))
+            flash_frame.blit(scaled_frame, (0, 0), special_flags=pygame.BLEND_MULT)
+            screen.blit(flash_frame, player_pos)
+        elif player.is_invulnerable:
+            # Flash player red when taking damage
+            if (current_time // 100) % 2:  # Flash every 100ms
+                flash_frame = pygame.Surface((player_size_current, player_size_current))
+                flash_frame.fill((255, 100, 100))
+                if is_chopping or is_mining:
+                    scaled_frame = pygame.transform.scale(chopping_frames[last_direction][player_frame_index], (player_size_current, player_size_current))
+                else:
+                    frame_set = player_frames.get(current_direction, player_frames["idle"])
+                    scaled_frame = pygame.transform.scale(frame_set[player_frame_index], (player_size_current, player_size_current))
+                flash_frame.blit(scaled_frame, (0, 0), special_flags=pygame.BLEND_MULT)
+                screen.blit(flash_frame, player_pos)
+            else:
+                if is_chopping or is_mining:
+                    scaled_frame = pygame.transform.scale(chopping_frames[last_direction][player_frame_index], (player_size_current, player_size_current))
+                    screen.blit(scaled_frame, player_pos)
+                else:
+                    frame_set = player_frames.get(current_direction, player_frames["idle"])
+                    scaled_frame = pygame.transform.scale(frame_set[player_frame_index], (player_size_current, player_size_current))
+                    screen.blit(scaled_frame, player_pos)
         else:
-            frame_set = player_frames.get(current_direction, player_frames["idle"])
-            scaled_frame = pygame.transform.scale(frame_set[player_frame_index], (player_size_current, player_size_current))
-            screen.blit(scaled_frame, player_pos)
+            # Normal player drawing
+            if is_chopping or is_mining:
+                scaled_frame = pygame.transform.scale(chopping_frames[last_direction][player_frame_index], (player_size_current, player_size_current))
+                screen.blit(scaled_frame, player_pos)
+            else:
+                frame_set = player_frames.get(current_direction, player_frames["idle"])
+                scaled_frame = pygame.transform.scale(frame_set[player_frame_index], (player_size_current, player_size_current))
+                screen.blit(scaled_frame, player_pos)
 
+        # Draw UI elements
+        draw_player_stats(screen, assets)
+        draw_experience_bar(screen, assets)  # New XP bar at bottom
         draw_hud(screen, assets)
+        draw_combat_ui(screen, assets)
         draw_tooltip_for_nearby_objects(screen, assets["small_font"])
 
         # Draw dialogs
@@ -1555,7 +2401,45 @@ def main():
         if show_equipment:
             draw_equipment_panel(screen, assets)
         
+        # Draw vendor GUI
+        if show_vendor_gui:
+            draw_vendor_gui(screen, assets)
+        
+        # Draw level up notification (over everything else)
+        draw_level_up_notification(screen, assets)
+        
+        # Draw coordinates at bottom
         draw_player_coordinates(screen, assets["small_font"])
+        
+        # Game over screen
+        if player.health <= 0:
+            game_over_text = assets["large_font"].render("GAME OVER", True, (255, 0, 0))
+            restart_text = assets["font"].render("Press R to restart or ESC to quit", True, (255, 255, 255))
+            screen.blit(game_over_text, game_over_text.get_rect(center=(WIDTH//2, HEIGHT//2 - 50)))
+            screen.blit(restart_text, restart_text.get_rect(center=(WIDTH//2, HEIGHT//2 + 50)))
+            
+            # Handle restart
+            keys = pygame.key.get_pressed()
+            if keys[pygame.K_r]:
+                # Restart game
+                player.health = player.max_health
+                player.level = 1
+                player.experience = 0
+                player.experience_to_next = 100
+                current_level = "world"
+                map_offset_x = 0
+                map_offset_y = 0
+                player_pos.center = (WIDTH // 2, HEIGHT // 2)
+                enemies.clear()
+                # Reset inventory
+                inventory = [[None for _ in range(4)] for _ in range(4)]
+                equipment_slots = {"weapon": None}
+                give_starting_items(assets)
+                setup_colliders()
+            elif keys[pygame.K_ESCAPE]:
+                pygame.quit()
+                sys.exit()
+
         pygame.display.flip()
 
 if __name__ == '__main__':
