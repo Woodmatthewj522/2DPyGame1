@@ -1111,14 +1111,15 @@ def draw_world(screen, assets):
         for col in range(start_col, start_col + cols_to_draw):
             x, y = col * TILE_SIZE, row * TILE_SIZE
             screen.blit(assets["grass"], (x - map_offset_x, y - map_offset_y))
+    
+     # Draw stones
+    for stone in stone_rects:
+        screen.blit(assets["stone_img"], (stone.x - map_offset_x, stone.y - map_offset_y))
 
     # Draw trees
     for tree in tree_rects:
         screen.blit(assets["tree"], (tree.x - map_offset_x - tree_size_diff // 6, tree.y - map_offset_y - tree_size_diff // 6))
 
-    # Draw stones
-    for stone in stone_rects:
-        screen.blit(assets["stone_img"], (stone.x - map_offset_x, stone.y - map_offset_y))
 
     # Draw flowers
     for fx, fy, idx in flower_tiles:
@@ -1347,18 +1348,6 @@ def draw_sell_content(screen, assets, panel_x, content_y, panel_width, shop_item
         
         sell_button_rects[item_name] = sell_button
         y_offset += item_height + 5
-    """Draw a tooltip at the specified position."""
-    padding = 6
-    text_surface = font.render(text, True, (255, 255, 255))
-    rect = text_surface.get_rect()
-    rect.midbottom = (pos[0] + 15, pos[1] - 5)
-
-    bg_surf = pygame.Surface((rect.width + 2*padding, rect.height + 2*padding), pygame.SRCALPHA)
-    bg_surf.fill((0, 0, 0, 180))
-    pygame.draw.rect(bg_surf, (255, 255, 255), bg_surf.get_rect(), 1)
-
-    screen.blit(bg_surf, (rect.x - padding, rect.y - padding))
-    screen.blit(text_surface, rect)
 
 def draw_npc_dialog(screen, assets):
     """Draws the NPC dialog box for Soldier Marcus."""
@@ -1581,6 +1570,22 @@ def draw_tooltip_for_nearby_objects(screen, font):
     # Draw the tooltip if we have text and position
     if tooltip_text and tooltip_pos:
         draw_tooltip(screen, font, tooltip_text, tooltip_pos)
+
+def draw_inventory(screen, assets):
+    """Draws the Character GUI."""
+    pygame.draw.rect(screen, (101, 67, 33), (INVENTORY_X, INVENTORY_Y, INVENTORY_WIDTH, INVENTORY_HEIGHT + 50))
+    header_rect = pygame.Rect(INVENTORY_X, INVENTORY_Y, INVENTORY_WIDTH, 40)
+    pygame.draw.rect(screen, (50, 33, 16), header_rect)
+    header_text = assets["small_font"].render("Character", True, (255, 255, 255))
+    screen.blit(header_text, header_text.get_rect(centerx=header_rect.centerx, top=INVENTORY_Y + 10))
+
+    for row in range(4):
+        for col in range(4):
+            slot_x = INVENTORY_X + INVENTORY_GAP + col * (INVENTORY_SLOT_SIZE + INVENTORY_GAP)
+            slot_y = INVENTORY_Y + 40 + INVENTORY_GAP + row * (INVENTORY_SLOT_SIZE + INVENTORY_GAP)
+            slot_rect = pygame.Rect(slot_x, slot_y, INVENTORY_SLOT_SIZE, INVENTORY_SLOT_SIZE)
+            pygame.draw.rect(screen, (70, 70, 70), slot_rect)
+            pygame.draw.rect(screen, (150, 150, 150), slot_rect, 2)
 
 def draw_inventory(screen, assets):
     """Draws the inventory GUI."""
@@ -2200,17 +2205,21 @@ def main():
                         
                 # Inventory
                 if show_inventory:
+                    global inventory
                     for row in range(4):
                         for col in range(4):
                             slot_x = INVENTORY_X + INVENTORY_GAP + col * (INVENTORY_SLOT_SIZE + INVENTORY_GAP)
                             slot_y = INVENTORY_Y + 40 + INVENTORY_GAP + row * (INVENTORY_SLOT_SIZE + INVENTORY_GAP)
                             slot_rect = pygame.Rect(slot_x, slot_y, INVENTORY_SLOT_SIZE, INVENTORY_SLOT_SIZE)
                             if slot_rect.collidepoint(event.pos):
-                                item_to_equip = inventory[row][col]
-                                if item_to_equip and item_to_equip.category == "Weapon":
-                                    if equip_item(item_to_equip):
-                                        inventory[row][col] = None
-                                        break
+                                try:
+                                    item_to_equip = inventory[row][col]
+                                    if item_to_equip and item_to_equip.category == "Weapon":
+                                        if equip_item(item_to_equip):
+                                            inventory[row][col] = None
+                                            break
+                                except Exception as e:
+                                    print("Error equipping item:", e)
 
         # Game State Updates
         # NPC idle animations
