@@ -21,7 +21,7 @@ MINING_DURATION = 2000  # ms
 
 # Combat constants
 COMBAT_RANGE = 80
-COMBAT_COOLDOWN = 1000  # ms between attacks
+COMBAT_COOLDOWN = 2000  # ms between attacks (slower)
 ENEMY_SPAWN_RATE = 0.02  # chance per frame in dungeon
 MAX_ENEMIES = 8
 ENEMY_SPEED = 2
@@ -46,7 +46,7 @@ INVENTORY_Y = (HEIGHT - INVENTORY_HEIGHT) // 2
 CRAFTING_PANEL_WIDTH = 420
 CRAFTING_PANEL_HEIGHT = 220
 CRAFTING_X = (WIDTH - CRAFTING_PANEL_WIDTH) // 2
-CRAFTING_Y = (WIDTH - CRAFTING_PANEL_HEIGHT) // 2
+CRAFTING_Y = (HEIGHT - CRAFTING_PANEL_HEIGHT) // 2
 
 # Equipment GUI constants
 EQUIPMENT_SLOT_SIZE = 40
@@ -72,6 +72,41 @@ class Item:
         self.category = category
         self.damage = damage
 
+class FloatingText:
+    def __init__(self, text, pos, color=(255, 0, 0), lifetime=1000):
+        """
+        text: string to display
+        pos: (x, y) world coordinates where the text starts
+        color: RGB color of the text
+        lifetime: how long (ms) the text stays visible
+        """
+        self.text = text
+        self.x, self.y = pos
+        self.color = color
+        self.lifetime = lifetime
+        self.start_time = pygame.time.get_ticks()
+        self.alpha = 255  # start fully opaque
+
+    def update(self):
+        elapsed = pygame.time.get_ticks() - self.start_time
+        if elapsed < self.lifetime:
+            # Move upward
+            self.y -= 0.5  
+            # Fade out
+            self.alpha = max(0, 255 - int((elapsed / self.lifetime) * 255))
+        else:
+            self.alpha = 0  # invisible
+
+    def is_alive(self):
+        return self.alpha > 0
+
+    def draw(self, surface, font, camera_x=0, camera_y=0):
+        if self.alpha <= 0:
+            return
+        text_surf = font.render(self.text, True, self.color)
+        text_surf.set_alpha(self.alpha)
+        surface.blit(text_surf, (self.x - camera_x, self.y - camera_y))
+
 class Player:
     def __init__(self):
         self.max_health = PLAYER_MAX_HEALTH
@@ -83,65 +118,86 @@ class Player:
         self.last_attack_time = 0
         self.is_invulnerable = False
         self.invulnerability_timer = 0
-        self.invulnerability_duration = 1000  # 1 second
-        
+        self.invulnerability_duration = 1000  # 1 second of invulnerability after being hit
+        self.rect = pygame.Rect(WIDTH // 2, HEIGHT // 2, PLAYER_SIZE, PLAYER_SIZE)  # Add rect attribute
+
     def take_damage(self, damage_amount, current_time):
+        """Apply damage to the player, trigger invulnerability, and show floating text."""
         if not self.is_invulnerable:
             self.health -= damage_amount
             self.is_invulnerable = True
             self.invulnerability_timer = current_time
+
+            # Floating text above player for damage taken
+            floating_texts.append(FloatingText(
+                f"-{damage_amount}",
+                (self.rect.x, self.rect.y - 15),
+                color=(255, 0, 0)  # bright red for player damage
+            ))
+
             if self.health <= 0:
                 self.health = 0
                 return True  # Player died
         return False
-    
+
     def heal(self, heal_amount):
+        """Restore health and show floating healing text."""
+        old_health = self.health
         self.health = min(self.max_health, self.health + heal_amount)
-    
+        actual_heal = self.health - old_health
+        
+        if actual_heal > 0:
+            floating_texts.append(FloatingText(
+                f"+{actual_heal}",
+                (self.rect.x, self.rect.y - 15),
+                color=(0, 255, 0)  # green for healing
+            ))
+
     def gain_experience(self, exp_amount):
         old_level = self.level
         self.experience += exp_amount
         if self.experience >= self.experience_to_next:
             self.level_up()
-            # Trigger level up visual feedback
+            # Level-up popup message
             global show_level_up, level_up_timer, level_up_text
             show_level_up = True
             level_up_timer = 0
             level_up_text = f"LEVEL UP! Level {self.level}"
-    
+
     def level_up(self):
         self.level += 1
         self.experience -= self.experience_to_next
-        self.experience_to_next = int(self.experience_to_next * 1.2)  # More gradual scaling
-        
-        # Level up bonuses - scale better at higher levels
-        health_bonus = 15 + (self.level * 2)  # Increases more each level
-        damage_bonus = 3 + (self.level // 2)  # Every 2 levels get extra damage
-        
+        self.experience_to_next = int(self.experience_to_next * 1.2)
+
+        # Level up bonuses
+        health_bonus = 15 + (self.level * 2)
+        damage_bonus = 3 + (self.level // 2)
+
         self.max_health += health_bonus
-        self.health = self.max_health  # Full heal on level up
+        self.health = self.max_health  # Full heal
         self.damage += damage_bonus
-        
+
         print(f"LEVEL UP! Now level {self.level}")
         print(f"Health: +{health_bonus} (Total: {self.max_health})")
         print(f"Damage: +{damage_bonus} (Total: {self.damage})")
         print(f"Next level: {self.experience_to_next} XP needed")
-    
+
     def can_attack(self, current_time):
         return current_time - self.last_attack_time >= COMBAT_COOLDOWN
-    
+
     def attack(self, current_time):
         if self.can_attack(current_time):
             self.last_attack_time = current_time
             return True
         return False
-    
+
     def update(self, dt, current_time):
-        # Update invulnerability
+        """Update timers like invulnerability cooldown."""
         if self.is_invulnerable and current_time - self.invulnerability_timer >= self.invulnerability_duration:
             self.is_invulnerable = False
-    
+
     def get_total_damage(self, equipped_weapon):
+        """Return base damage + weapon damage."""
         weapon_damage = equipped_weapon.damage if equipped_weapon else 0
         return self.damage + weapon_damage
 
@@ -156,88 +212,92 @@ class Enemy:
         self.last_attack_time = 0
         self.state = "idle"  # idle, chasing, attacking
         self.target = None
-        # Scale XP rewards with player level for continued progression
+
+        # XP reward scales with player level
         base_xp = 30 if enemy_type == "orc" else 20
-        self.experience_reward = base_xp + (player.level * 5)  # More XP at higher levels
-        
+        self.experience_reward = base_xp + (player.level * 5)
+
         # Animation
         self.frame_index = 0
         self.frame_timer = 0
         self.frame_delay = 200
-        
+
         # AI
         self.path_timer = 0
         self.random_direction = random.choice([(1, 0), (-1, 0), (0, 1), (0, -1)])
-    
+
     def take_damage(self, damage_amount):
         self.health -= damage_amount
+        # show floating text when the enemy takes damage
+        floating_texts.append(FloatingText(
+            f"-{damage_amount}",
+            (self.rect.x, self.rect.y - 15),
+            color=(255, 50, 50)
+        ))
         return self.health <= 0
-    
+
     def can_attack(self, current_time):
         return current_time - self.last_attack_time >= ENEMY_ATTACK_COOLDOWN
-    
+
     def attack_player(self, player_world_rect, current_time):
         if self.can_attack(current_time) and self.rect.colliderect(player_world_rect.inflate(ENEMY_ATTACK_RANGE, ENEMY_ATTACK_RANGE)):
             self.last_attack_time = current_time
             return True
         return False
-    
+
     def update(self, dt, current_time, player_world_rect, obstacles):
         # Animation
         self.frame_timer += dt
         if self.frame_timer >= self.frame_delay:
             self.frame_index = (self.frame_index + 1) % 4
             self.frame_timer = 0
-        
+
         # AI Logic
-        distance_to_player = math.sqrt((self.rect.centerx - player_world_rect.centerx)**2 + 
-                                     (self.rect.centery - player_world_rect.centery)**2)
-        
+        distance_to_player = math.sqrt((self.rect.centerx - player_world_rect.centerx) ** 2 +
+                                       (self.rect.centery - player_world_rect.centery) ** 2)
+
         if distance_to_player <= ENEMY_AGGRO_RANGE:
             self.state = "chasing"
             self.target = player_world_rect
         elif distance_to_player > ENEMY_AGGRO_RANGE * 1.5:
             self.state = "idle"
             self.target = None
-        
+
         # Movement
         old_rect = self.rect.copy()
-        
+
         if self.state == "chasing" and self.target:
-            # Move towards player
             dx = self.target.centerx - self.rect.centerx
             dy = self.target.centery - self.rect.centery
-            
+
             if dx != 0 or dy != 0:
-                # Normalize movement
-                length = math.sqrt(dx*dx + dy*dy)
+                length = math.sqrt(dx * dx + dy * dy)
                 dx = (dx / length) * self.speed
                 dy = (dy / length) * self.speed
-                
+
                 self.rect.x += dx
                 self.rect.y += dy
-        
+
         elif self.state == "idle":
             # Random wandering
             self.path_timer += dt
-            if self.path_timer >= 2000:  # Change direction every 2 seconds
+            if self.path_timer >= 2000:
                 self.random_direction = random.choice([(1, 0), (-1, 0), (0, 1), (0, -1), (0, 0)])
                 self.path_timer = 0
-            
+
             dx, dy = self.random_direction
             self.rect.x += dx * self.speed * 0.5
             self.rect.y += dy * self.speed * 0.5
-        
+
         # Collision detection with obstacles
         collision = False
         for obstacle in obstacles:
             if self.rect.colliderect(obstacle):
                 collision = True
                 break
-        
+
         if collision:
             self.rect = old_rect
-            # If chasing and hit obstacle, try to go around
             if self.state == "chasing":
                 self.random_direction = random.choice([(1, 0), (-1, 0), (0, 1), (0, -1)])
 
@@ -268,6 +328,7 @@ idle_chop_delay = 500
 is_attacking = False
 attack_animation_timer = 0
 attack_animation_duration = 300
+target_enemy = None  # Currently targeted enemy
 
 # Stone specific state
 is_mining = False
@@ -324,6 +385,7 @@ npc_rect = None
 miner_npc_rect = None
 gold_coins = []
 last_enemy_spawn = 0
+
 # Level up visual feedback
 level_up_timer = 0
 level_up_text = ""
@@ -335,6 +397,8 @@ dungeon_walls = []
 dungeon_enemies = []
 dungeon_exit = None
 enemies = []
+floating_texts = []
+
 # Crafting button rects
 axe_button_rect = None
 pickaxe_button_rect = None
@@ -350,6 +414,41 @@ def get_player_world_rect():
 def world_to_screen_rect(world_rect):
     """Convert a world rect to screen coordinates."""
     return pygame.Rect(world_rect.x - map_offset_x, world_rect.y - map_offset_y, world_rect.width, world_rect.height)
+
+def find_safe_spawn_position(avoid_rects, spawn_area_rect, entity_size=(PLAYER_SIZE, PLAYER_SIZE)):
+    """Find a safe position to spawn an entity avoiding obstacles."""
+    for attempt in range(100):  # Try 100 times to find a safe spot
+        x = random.randint(spawn_area_rect.x, spawn_area_rect.x + spawn_area_rect.width - entity_size[0])
+        y = random.randint(spawn_area_rect.y, spawn_area_rect.y + spawn_area_rect.height - entity_size[1])
+        
+        test_rect = pygame.Rect(x, y, entity_size[0], entity_size[1])
+        
+        # Check if this position collides with any obstacles
+        collision = False
+        for obstacle in avoid_rects:
+            if test_rect.colliderect(obstacle):
+                collision = True
+                break
+        
+        if not collision:
+            return (x, y)
+    
+    # If no safe position found, return center of spawn area
+    return (spawn_area_rect.centerx - entity_size[0]//2, spawn_area_rect.centery - entity_size[1]//2)
+
+def find_nearest_enemy(player_world_rect):
+    """Find the nearest enemy within attack range."""
+    nearest_enemy = None
+    min_distance = float('inf')
+    
+    for enemy in enemies:
+        distance = math.sqrt((enemy.rect.centerx - player_world_rect.centerx) ** 2 + 
+                           (enemy.rect.centery - player_world_rect.centery) ** 2)
+        if distance <= COMBAT_RANGE and distance < min_distance:
+            nearest_enemy = enemy
+            min_distance = distance
+    
+    return nearest_enemy
 
 # --- INIT ---
 def init():
@@ -417,7 +516,7 @@ def load_enemy_frames():
         orc_sheet = pygame.image.load("orc-attack01.png").convert_alpha()
         orc_frames = []
 
-        total_frames = 6  # <-- your sheet has 6 frames
+        total_frames = 6
         frame_width = orc_sheet.get_width() // total_frames
         frame_height = orc_sheet.get_height()
 
@@ -430,12 +529,14 @@ def load_enemy_frames():
 
     except Exception as e:
         print("Error loading enemy frames:", e)
-        return {}
+        # Return fallback enemy frames
+        fallback_frame = pygame.Surface((PLAYER_SIZE * 4, PLAYER_SIZE * 4))
+        fallback_frame.fill((139, 69, 19))
+        return {"orc": [fallback_frame] * 4}
     
 def frame_rect_to_surface(sheet, rect):
     """Helper to extract a subsurface safely."""
     return sheet.subsurface(rect).copy()
-
 
 def load_assets():
     """Loads all game assets and defines Item objects."""
@@ -687,8 +788,12 @@ def setup_colliders():
                 occupied_positions.add((col, row))
 
     # --- HOUSES ---
-    house_rect_1 = pygame.Rect(player_world_rect.x + 100, player_world_rect.y, TILE_SIZE * 2, TILE_SIZE * 2)
-    house_rect_2 = pygame.Rect(house_rect_1.x + 200, house_rect_1.y, TILE_SIZE * 2, TILE_SIZE * 2)
+    # Find safe positions for houses
+    safe_house_x = 10 * TILE_SIZE  # Start further from spawn
+    safe_house_y = 10 * TILE_SIZE
+    
+    house_rect_1 = pygame.Rect(safe_house_x, safe_house_y, TILE_SIZE * 2, TILE_SIZE * 2)
+    house_rect_2 = pygame.Rect(safe_house_x + 200, safe_house_y, TILE_SIZE * 2, TILE_SIZE * 2)
     tree_rects.extend([house_rect_1, house_rect_2])
     house_list.extend([house_rect_1, house_rect_2])
     
@@ -701,7 +806,7 @@ def setup_colliders():
                 if 0 <= grid_x < map_cols and 0 <= grid_y < map_rows:
                     occupied_positions.add((grid_x, grid_y))
 
-    # NPCs
+    # NPCs in safe positions
     npc_rect = pygame.Rect(house_rect_1.x - 60, house_rect_1.y + 30, PLAYER_SIZE * 4, PLAYER_SIZE * 4)
     
     # --- DUNGEON PORTAL ---
@@ -760,84 +865,110 @@ def give_starting_items(assets):
     add_item_to_inventory(assets["axe_item"])
 
 def spawn_enemy_in_dungeon():
+    """Spawn an enemy in a valid location in the dungeon."""
     global last_enemy_spawn, enemies
 
     current_time = pygame.time.get_ticks()
     if current_time - last_enemy_spawn < 3000:
         return  # too soon, don't spawn
 
-    x = random.randint(5, 25) * TILE_SIZE
-    y = random.randint(5, 25) * TILE_SIZE
-    enemy = Enemy(x, y, "orc")
-    enemies.append(enemy)
+    if len(enemies) >= MAX_ENEMIES:
+        return  # Too many enemies already
 
-    last_enemy_spawn = current_time  # <-- update after spawning
-
+    # Define safe spawn area (avoid walls and player)
+    spawn_area = pygame.Rect(3 * TILE_SIZE, 3 * TILE_SIZE, 
+                            (DUNGEON_SIZE - 6) * TILE_SIZE, (DUNGEON_SIZE - 6) * TILE_SIZE)
     
-    # Find a valid spawn location
-    for _ in range(20):  # Try 20 times to find a valid spot
-        x = random.randint(3, DUNGEON_SIZE - 3) * TILE_SIZE + random.randint(-20, 20)
-        y = random.randint(3, DUNGEON_SIZE - 3) * TILE_SIZE + random.randint(-20, 20)
-        
-        enemy_rect = pygame.Rect(x, y, PLAYER_SIZE, PLAYER_SIZE)
-        
-        # Check if spawn location is valid (not in walls, not too close to player)
-        wall_collision = any(enemy_rect.colliderect(wall) for wall in dungeon_walls)
-        ore_collision = any(enemy_rect.colliderect(ore) for ore in stone_rects)
-        player_world_rect = get_player_world_rect()
-        too_close_to_player = enemy_rect.colliderect(player_world_rect.inflate(150, 150))
-        
-        if not wall_collision and not ore_collision and not too_close_to_player:
-            enemy = Enemy(x, y, "orc")
-            enemies.append(enemy)
-            last_enemy_spawn = current_time
-            print(f"Spawned orc at ({x}, {y})")
-            break
+    # Get obstacles to avoid
+    obstacles = dungeon_walls + stone_rects
+    player_world_rect = get_player_world_rect()
+    player_avoid_area = player_world_rect.inflate(150, 150)
+    obstacles.append(player_avoid_area)
+    
+    # Find safe spawn position
+    spawn_pos = find_safe_spawn_position(obstacles, spawn_area, (PLAYER_SIZE, PLAYER_SIZE))
+    
+    enemy = Enemy(spawn_pos[0], spawn_pos[1], "orc")
+    enemies.append(enemy)
+    last_enemy_spawn = current_time
+    print(f"Spawned orc at ({spawn_pos[0]}, {spawn_pos[1]})")
 
 def handle_combat(current_time):
     """Handles combat between player and enemies."""
-    global is_attacking, attack_animation_timer
+    global is_attacking, attack_animation_timer, current_level, map_offset_x, map_offset_y
+    global target_enemy, current_direction, last_direction
     
     player_world_rect = get_player_world_rect()
     equipped_weapon = equipment_slots.get("weapon")
-    
-    # Handle player attacking enemies
+
+    # Update player's rect for floating text positioning
+    player.rect = player_world_rect
+
+    # -------------------------
+    # Player attacking enemies
+    # -------------------------
     if is_attacking:
         attack_animation_timer += pygame.time.Clock().get_time()
+        
+        # Face the targeted enemy while attacking
+        if target_enemy and target_enemy in enemies:
+            # Calculate direction to enemy
+            dx = target_enemy.rect.centerx - player_world_rect.centerx
+            dy = target_enemy.rect.centery - player_world_rect.centery
+            
+            # Determine facing direction
+            if abs(dx) > abs(dy):
+                if dx > 0:
+                    current_direction = "right"
+                    last_direction = "right"
+                else:
+                    current_direction = "left"
+                    last_direction = "left"
+            else:
+                if dy > 0:
+                    current_direction = "down"
+                    last_direction = "down"
+                else:
+                    current_direction = "up"
+                    last_direction = "up"
+        
         if attack_animation_timer >= attack_animation_duration:
             is_attacking = False
             attack_animation_timer = 0
-        
-        # Check if any enemies are in range and deal damage
+            target_enemy = None  # Clear target after attack
+
+        # Player attack area
         player_damage = player.get_total_damage(equipped_weapon)
         attack_rect = player_world_rect.inflate(COMBAT_RANGE, COMBAT_RANGE)
-        
-        for enemy in enemies[:]:  # Use slice to avoid modification during iteration
+
+        for enemy in enemies[:]:  # Copy list for safe removal
             if attack_rect.colliderect(enemy.rect):
                 if enemy.take_damage(player_damage):
-                    # Enemy died
                     player.gain_experience(enemy.experience_reward)
                     enemies.remove(enemy)
                     print(f"Defeated {enemy.type}! Gained {enemy.experience_reward} XP")
-    
-    # Handle enemies attacking player
+
+    # -------------------------
+    # Enemies attacking player
+    # -------------------------
     for enemy in enemies:
         if enemy.attack_player(player_world_rect, current_time):
-            if player.take_damage(enemy.damage, current_time):
+            player.take_damage(enemy.damage, current_time)
+            
+            # If player died
+            if player.health <= 0:
                 print("You died!")
-                # Reset player position or handle death
-                global current_level
                 if current_level == "dungeon":
                     # Respawn outside dungeon
                     current_level = "world"
                     portal_x = 25 * TILE_SIZE
                     portal_y = 38 * TILE_SIZE
-                    global map_offset_x, map_offset_y
                     map_offset_x = portal_x - WIDTH // 2
                     map_offset_y = portal_y - HEIGHT // 2 + 100
                     player_pos.center = (WIDTH // 2, HEIGHT // 2)
                     player.health = player.max_health // 2  # Respawn with half health
-                    enemies.clear()  # Clear all enemies
+                    enemies.clear()
+                    target_enemy = None  # Clear target on death
 
 # --- INVENTORY/CRAFTING/EQUIPMENT LOGIC ---
 def add_item_to_inventory(item_to_add):
@@ -907,7 +1038,6 @@ def unequip_item():
         else:
             print("Inventory is full, cannot unequip.")
     return False
-
 # --- DRAWING FUNCTIONS ---
 def draw_health_bar(screen, x, y, current_health, max_health, width=100, height=10):
     """Draws a health bar at the specified position."""
@@ -1006,90 +1136,6 @@ def draw_experience_bar(screen, assets):
     text_surf = assets["small_font"].render(exp_text, True, (255, 255, 255))
     text_rect = text_surf.get_rect(center=(WIDTH // 2, bar_y + bar_height // 2))
     screen.blit(text_surf, text_rect)
-    
-    # Level indicator on the left
-    level_text = f"LVL {player.level}"
-    level_surf = assets["font"].render(level_text, True, (255, 215, 0))  # Gold color
-    screen.blit(level_surf, (bar_x + 5, bar_y + 2))
-    
-    # Next level indicator on the right
-    next_level_text = f"Next: {player.experience_to_next - player.experience}"
-    next_surf = assets["small_font"].render(next_level_text, True, (200, 200, 200))
-    next_rect = next_surf.get_rect(right=bar_x + bar_width - 5, centery=bar_y + bar_height // 2)
-    screen.blit(next_surf, next_rect)
-    """Draws level up notification in the center of screen."""
-    if not show_level_up:
-        return
-    
-    # Create pulsing effect based on timer
-    pulse = math.sin(level_up_timer / 200.0) * 0.3 + 1.0
-    
-    # Level up text
-    level_text = assets["large_font"].render(level_up_text, True, (255, 215, 0))  # Gold
-    text_rect = level_text.get_rect(center=(WIDTH // 2, HEIGHT // 2 - 50))
-    
-    # Scale text for pulse effect
-    scaled_width = int(text_rect.width * pulse)
-    scaled_height = int(text_rect.height * pulse)
-    scaled_text = pygame.transform.scale(level_text, (scaled_width, scaled_height))
-    scaled_rect = scaled_text.get_rect(center=(WIDTH // 2, HEIGHT // 2 - 50))
-    
-    # Background glow effect
-    glow_rect = scaled_rect.inflate(40, 20)
-    glow_surf = pygame.Surface((glow_rect.width, glow_rect.height), pygame.SRCALPHA)
-    glow_surf.fill((255, 215, 0, 50))
-    screen.blit(glow_surf, glow_rect)
-    
-    screen.blit(scaled_text, scaled_rect)
-    
-
-    # Stats increase text
-    stats_text = f"Health +{15 + (player.level * 2)} | Damage +{3 + (player.level // 2)}"
-    stats_surf = assets["small_font"].render(stats_text, True, (200, 255, 200))
-    stats_rect = stats_surf.get_rect(center=(WIDTH // 2, HEIGHT // 2 + 10))
-    screen.blit(stats_surf, stats_rect)
-    """Draws the experience/level progress bar at the bottom of the screen."""
-    bar_height = 25
-    bar_y = HEIGHT - bar_height - 5
-    bar_width = WIDTH - 20
-    bar_x = 10
-    
-    # Background
-    bg_rect = pygame.Rect(bar_x, bar_y, bar_width, bar_height)
-    pygame.draw.rect(screen, (40, 40, 40), bg_rect)
-    pygame.draw.rect(screen, (255, 255, 255), bg_rect, 2)
-    
-    # Experience progress
-    if player.experience_to_next > 0:
-        exp_ratio = player.experience / player.experience_to_next
-        exp_width = int(bar_width * exp_ratio)
-        exp_rect = pygame.Rect(bar_x, bar_y, exp_width, bar_height)
-        
-        # Gradient effect for XP bar
-        for i in range(bar_height):
-            color_intensity = 100 + int(155 * (1 - i / bar_height))
-            line_color = (0, 0, color_intensity)
-            if exp_width > 0:
-                pygame.draw.line(screen, line_color, 
-                               (bar_x, bar_y + i), 
-                               (bar_x + exp_width, bar_y + i))
-    
-    # Text overlay
-    exp_text = f"Level {player.level} - XP: {player.experience}/{player.experience_to_next}"
-    text_surf = assets["small_font"].render(exp_text, True, (255, 255, 255))
-    text_rect = text_surf.get_rect(center=(WIDTH // 2, bar_y + bar_height // 2))
-    screen.blit(text_surf, text_rect)
-    
-    # Level indicator on the left
-    level_text = f"LVL {player.level}"
-    level_surf = assets["font"].render(level_text, True, (255, 215, 0))  # Gold color
-    screen.blit(level_surf, (bar_x + 5, bar_y + 2))
-    
-    # Next level indicator on the right
-    next_level_text = f"Next: {player.experience_to_next - player.experience}"
-    next_surf = assets["small_font"].render(next_level_text, True, (200, 200, 200))
-    next_rect = next_surf.get_rect(right=bar_x + bar_width - 5, centery=bar_y + bar_height // 2)
-    screen.blit(next_surf, next_rect)
 
 def draw_player_coordinates(screen, font):
     """Draws the player's current world coordinates in the bottom-left corner."""
@@ -1112,14 +1158,13 @@ def draw_world(screen, assets):
             x, y = col * TILE_SIZE, row * TILE_SIZE
             screen.blit(assets["grass"], (x - map_offset_x, y - map_offset_y))
     
-     # Draw stones
+    # Draw stones
     for stone in stone_rects:
         screen.blit(assets["stone_img"], (stone.x - map_offset_x, stone.y - map_offset_y))
 
     # Draw trees
     for tree in tree_rects:
         screen.blit(assets["tree"], (tree.x - map_offset_x - tree_size_diff // 6, tree.y - map_offset_y - tree_size_diff // 6))
-
 
     # Draw flowers
     for fx, fy, idx in flower_tiles:
@@ -1165,17 +1210,20 @@ def draw_dungeon(screen, assets, enemy_frames):
     # Draw ore deposits
     for ore in stone_rects:
         screen.blit(assets["ore_img"], (ore.x - map_offset_x, ore.y - map_offset_y))
-    for enemy in enemies:
-        print("Drawing enemy:", enemy.type, enemy.frame_index, enemy.rect)
-        enemy_screen_rect = world_to_screen_rect(enemy.rect)
-    ...
 
     # Draw enemies
     for enemy in enemies:
         enemy_screen_rect = world_to_screen_rect(enemy.rect)
         if 0 <= enemy_screen_rect.x <= WIDTH and 0 <= enemy_screen_rect.y <= HEIGHT:  # Only draw if on screen
-            frame = enemy_frames[enemy.type][enemy.frame_index]
-            screen.blit(frame, enemy_screen_rect)
+            if enemy.type in enemy_frames and len(enemy_frames[enemy.type]) > 0:
+                frame = enemy_frames[enemy.type][enemy.frame_index % len(enemy_frames[enemy.type])]
+                screen.blit(frame, enemy_screen_rect)
+            
+            # Draw target indicator for the targeted enemy
+            if target_enemy == enemy:
+                target_outline = pygame.Surface((enemy.rect.width + 8, enemy.rect.height + 8), pygame.SRCALPHA)
+                target_outline.fill((255, 255, 0, 150))  # Yellow glow
+                screen.blit(target_outline, (enemy_screen_rect.x - 4, enemy_screen_rect.y - 4))
             
             # Draw enemy health bar
             if enemy.health < enemy.max_health:
@@ -1186,6 +1234,79 @@ def draw_dungeon(screen, assets, enemy_frames):
     if dungeon_exit:
         screen.blit(assets["portal"], (dungeon_exit.x - map_offset_x, dungeon_exit.y - map_offset_y))
 
+    # Update floating texts
+    for text in floating_texts[:]:
+        text.update()
+        if not text.is_alive():
+            floating_texts.remove(text)
+        else:
+            text.draw(screen, assets["small_font"], map_offset_x, map_offset_y)
+            # Draw the dungeon portal
+    if dungeon_portal:
+        screen.blit(assets["portal"], (dungeon_portal.x - map_offset_x, dungeon_portal.y - map_offset_y))
+
+    # Draw the houses
+    if house_list:
+        screen.blit(assets["house"], (house_list[0].x - map_offset_x, house_list[0].y - map_offset_y))
+        screen.blit(assets["house1"], (house_list[1].x - map_offset_x, house_list[1].y - map_offset_y))
+
+    # Draw NPC with idle animation
+    if npc_rect:
+        animated_y = npc_rect.y + npc_idle_offset_y
+        screen.blit(assets["npc_image"], (npc_rect.x - map_offset_x, animated_y - map_offset_y))
+    
+    # Draw Miner NPC with idle animation
+    if miner_npc_rect:
+        miner_animated_y = miner_npc_rect.y + miner_idle_offset_y
+        screen.blit(assets["miner_image"], (miner_npc_rect.x - map_offset_x, miner_animated_y - map_offset_y))
+
+def draw_dungeon(screen, assets, enemy_frames):
+    """Draws the dungeon level with enemies."""
+    dungeon_width = 30
+    dungeon_height = 30
+
+    # Draw floor tiles
+    for x in range(dungeon_width):
+        for y in range(dungeon_height):
+            screen.blit(assets["dungeon_floor"], (x * TILE_SIZE - map_offset_x, y * TILE_SIZE - map_offset_y))
+
+    # Draw dungeon walls
+    for wall in dungeon_walls:
+        screen.blit(assets["dungeon_wall"], (wall.x - map_offset_x, wall.y - map_offset_y))
+    
+    # Draw ore deposits
+    for ore in stone_rects:
+        screen.blit(assets["ore_img"], (ore.x - map_offset_x, ore.y - map_offset_y))
+
+    # Draw enemies
+    for enemy in enemies:
+        enemy_screen_rect = world_to_screen_rect(enemy.rect)
+        if 0 <= enemy_screen_rect.x <= WIDTH and 0 <= enemy_screen_rect.y <= HEIGHT:  # Only draw if on screen
+            if enemy.type in enemy_frames and len(enemy_frames[enemy.type]) > 0:
+                frame = enemy_frames[enemy.type][enemy.frame_index % len(enemy_frames[enemy.type])]
+                screen.blit(frame, enemy_screen_rect)
+            
+            # Draw target indicator for the targeted enemy
+            if target_enemy == enemy:
+                target_outline = pygame.Surface((enemy.rect.width + 8, enemy.rect.height + 8), pygame.SRCALPHA)
+                target_outline.fill((255, 255, 0, 150))  # Yellow glow
+                screen.blit(target_outline, (enemy_screen_rect.x - 4, enemy_screen_rect.y - 4))
+            
+            # Draw enemy health bar
+            if enemy.health < enemy.max_health:
+                bar_y = enemy_screen_rect.y - 10
+                draw_health_bar(screen, enemy_screen_rect.x, bar_y, enemy.health, enemy.max_health, enemy.rect.width, 5)
+    
+    # Draw exit portal
+    if dungeon_exit:
+        screen.blit(assets["portal"], (dungeon_exit.x - map_offset_x, dungeon_exit.y - map_offset_y))
+
+    # Update floating texts
+    for text in floating_texts[:]:
+        text.update()
+        if not text.is_alive():
+            floating_texts.remove(text)
+        
 def get_shop_items(assets):
     """Returns the items available in the shop with their prices."""
     return {
@@ -1447,6 +1568,7 @@ def draw_miner_dialog(screen, assets):
         line_text = assets["small_font"].render(line, True, (255, 255, 255))
         screen.blit(line_text, (dialog_x + 10, dialog_y + y_offset))
         y_offset += 25
+
 def draw_tooltip(screen, font, text, position):
     # Render text
     tooltip_surface = font.render(text, True, (255, 255, 255))
@@ -1570,22 +1692,6 @@ def draw_tooltip_for_nearby_objects(screen, font):
     # Draw the tooltip if we have text and position
     if tooltip_text and tooltip_pos:
         draw_tooltip(screen, font, tooltip_text, tooltip_pos)
-
-def draw_inventory(screen, assets):
-    """Draws the Character GUI."""
-    pygame.draw.rect(screen, (101, 67, 33), (INVENTORY_X, INVENTORY_Y, INVENTORY_WIDTH, INVENTORY_HEIGHT + 50))
-    header_rect = pygame.Rect(INVENTORY_X, INVENTORY_Y, INVENTORY_WIDTH, 40)
-    pygame.draw.rect(screen, (50, 33, 16), header_rect)
-    header_text = assets["small_font"].render("Character", True, (255, 255, 255))
-    screen.blit(header_text, header_text.get_rect(centerx=header_rect.centerx, top=INVENTORY_Y + 10))
-
-    for row in range(4):
-        for col in range(4):
-            slot_x = INVENTORY_X + INVENTORY_GAP + col * (INVENTORY_SLOT_SIZE + INVENTORY_GAP)
-            slot_y = INVENTORY_Y + 40 + INVENTORY_GAP + row * (INVENTORY_SLOT_SIZE + INVENTORY_GAP)
-            slot_rect = pygame.Rect(slot_x, slot_y, INVENTORY_SLOT_SIZE, INVENTORY_SLOT_SIZE)
-            pygame.draw.rect(screen, (70, 70, 70), slot_rect)
-            pygame.draw.rect(screen, (150, 150, 150), slot_rect, 2)
 
 def draw_inventory(screen, assets):
     """Draws the inventory GUI."""
@@ -1949,17 +2055,21 @@ def main():
                 player_world_rect = get_player_world_rect()
                 if event.key == pygame.K_e:
                     if current_level == "world":
-                        # Priority 1: Enter Dungeon Portal
                         if dungeon_portal and player_world_rect.colliderect(dungeon_portal.inflate(20, 20)):
                             current_level = "dungeon"
-                            map_offset_x = DUNGEON_SPAWN_X - WIDTH // 2
-                            map_offset_y = DUNGEON_SPAWN_Y - HEIGHT // 2
-                            player_pos.center = (WIDTH // 2, HEIGHT // 2)
-                            # Spawn some initial enemies when entering dungeon
+
+                            # Put player just above the dungeon exit tile
+                            player_pos.center = (5 * TILE_SIZE, 5 * TILE_SIZE)
+
+                            # Camera follows the player
+                            map_offset_x = player_pos.centerx - WIDTH // 2
+                            map_offset_y = player_pos.centery - HEIGHT // 2
+
+                            # Reset enemies
                             enemies.clear()
-                            for _ in range(3):  # Spawn 3 enemies initially
+                            for _ in range(3):
                                 spawn_enemy_in_dungeon()
-                            
+
                         # Priority 2: Enter House
                         elif check_house_entry(player_world_rect) is not None:
                             house_index = check_house_entry(player_world_rect)
@@ -2042,7 +2152,8 @@ def main():
                             portal_y = 38 * TILE_SIZE
                             map_offset_x = portal_x - WIDTH // 2
                             map_offset_y = portal_y - HEIGHT // 2 + 100
-                            player_pos.center = (WIDTH // 2, HEIGHT // 2)
+                            player_pos.center = (portal_x, portal_y)
+
                             enemies.clear()  # Clear enemies when exiting dungeon
                         elif equipment_slots["weapon"] and equipment_slots["weapon"].name == "Pickaxe":
                             for stone in list(stone_rects):
