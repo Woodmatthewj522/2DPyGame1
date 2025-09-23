@@ -111,81 +111,111 @@ class FloatingText:
         text_surf.set_alpha(self.alpha)
         surface.blit(text_surf, (self.x - camera_x, self.y - camera_y))
 
+import pygame
+
 class Player:
     def __init__(self):
-        self.max_health = PLAYER_MAX_HEALTH
-        self.health = self.max_health
-        self.damage = PLAYER_BASE_DAMAGE
+        # Core stats
         self.level = 1
         self.experience = 0
         self.experience_to_next = 100
+
+        # Base stats
+        self.base_max_health = PLAYER_MAX_HEALTH
+        self.base_damage = PLAYER_BASE_DAMAGE
+
+        # Dynamic stats
+        self.max_health = self.base_max_health
+        self.health = self.max_health
+        self.damage = self.base_damage
+
+        # Combat & state
         self.last_attack_time = 0
         self.is_invulnerable = False
         self.invulnerability_timer = 0
-        self.invulnerability_duration = 1000  # 1 second of invulnerability after being hit
-        self.rect = pygame.Rect(WIDTH // 2, HEIGHT // 2, PLAYER_SIZE, PLAYER_SIZE)  # Add rect attribute
+        self.invulnerability_duration = 1000  # ms
 
+        # Position & hitbox
+        self.rect = pygame.Rect(WIDTH // 2, HEIGHT // 2, PLAYER_SIZE, PLAYER_SIZE)
+        self.hitbox = self.rect.inflate(-PLAYER_SIZE // 4, -PLAYER_SIZE // 4)
+
+        # Status effects (buffs/debuffs)
+        self.status_effects = {}  # {"poison": {"duration": 3000, "timer": 0, "tick_damage": 2}}
+
+    # ------------------------
+    # Combat
+    # ------------------------
     def take_damage(self, damage_amount, current_time):
-        """Apply damage to the player, trigger invulnerability, and show floating text."""
-        if not self.is_invulnerable:
-            self.health -= damage_amount
-            self.is_invulnerable = True
-            self.invulnerability_timer = current_time
+        """Apply damage, respecting invulnerability & effects."""
+        if self.is_invulnerable:
+            return False
 
-            # Floating text above player for damage taken
-            floating_texts.append(FloatingText(
-                f"-{damage_amount}",
-                (self.rect.x, self.rect.y - 15),
-                color=(255, 0, 0)  # bright red for player damage
-            ))
+        final_damage = max(1, damage_amount)  # prevent zero damage
+        self.health -= final_damage
+        self.is_invulnerable = True
+        self.invulnerability_timer = current_time
 
-            if self.health <= 0:
-                self.health = 0
-                return True  # Player died
+        floating_texts.append(FloatingText(
+            f"-{final_damage}",
+            (self.rect.x, self.rect.y - 15),
+            color=(255, 0, 0)
+        ))
+
+        if self.health <= 0:
+            self.die()
+            return True
         return False
 
     def heal(self, heal_amount):
-        """Restore health and show floating healing text."""
+        """Heal with feedback, no overheal beyond max_health."""
         old_health = self.health
         self.health = min(self.max_health, self.health + heal_amount)
         actual_heal = self.health - old_health
-        
+
         if actual_heal > 0:
             floating_texts.append(FloatingText(
                 f"+{actual_heal}",
                 (self.rect.x, self.rect.y - 15),
-                color=(0, 255, 0)  # green for healing
+                color=(0, 255, 0)
             ))
 
+    def die(self):
+        """Handle player death (game over, respawn, etc.)."""
+        print("💀 Player has died!")
+        # TODO: trigger game over screen or respawn
+
+    # ------------------------
+    # Leveling
+    # ------------------------
     def gain_experience(self, exp_amount):
-        old_level = self.level
         self.experience += exp_amount
-        if self.experience >= self.experience_to_next:
+        while self.experience >= self.experience_to_next:
+            self.experience -= self.experience_to_next
             self.level_up()
-            # Level-up popup message
-            global show_level_up, level_up_timer, level_up_text
-            show_level_up = True
-            level_up_timer = 0
-            level_up_text = f"LEVEL UP! Level {self.level}"
 
     def level_up(self):
         self.level += 1
-        self.experience -= self.experience_to_next
-        self.experience_to_next = int(self.experience_to_next * 1.2)
+        self.experience_to_next = int(self.experience_to_next * 1.25)
 
-        # Level up bonuses
-        health_bonus = 15 + (self.level * 2)
-        damage_bonus = 3 + (self.level // 2)
+        # Growth formulas (scales better than hardcoding)
+        health_bonus = 10 + self.level * 5
+        damage_bonus = 2 + self.level // 2
 
         self.max_health += health_bonus
-        self.health = self.max_health  # Full heal
+        self.health = self.max_health
         self.damage += damage_bonus
 
-        print(f"LEVEL UP! Now level {self.level}")
-        print(f"Health: +{health_bonus} (Total: {self.max_health})")
-        print(f"Damage: +{damage_bonus} (Total: {self.damage})")
-        print(f"Next level: {self.experience_to_next} XP needed")
+        # Popup feedback
+        global show_level_up, level_up_timer, level_up_text
+        show_level_up = True
+        level_up_timer = 0
+        level_up_text = f"LEVEL UP! Level {self.level}"
 
+        print(f"⬆️ Level {self.level} | HP: {self.max_health} | DMG: {self.damage}")
+
+    # ------------------------
+    # Combat Actions
+    # ------------------------
     def can_attack(self, current_time):
         return current_time - self.last_attack_time >= COMBAT_COOLDOWN
 
@@ -195,44 +225,85 @@ class Player:
             return True
         return False
 
+    def get_total_damage(self, equipped_weapon=None):
+        """Return base + weapon + buffs damage."""
+        weapon_damage = equipped_weapon.damage if equipped_weapon else 0
+        buff_bonus = sum(buff.get("damage", 0) for buff in self.status_effects.values())
+        return self.damage + weapon_damage + buff_bonus
+
+    # ------------------------
+    # Status Effects
+    # ------------------------
+    def add_status_effect(self, name, duration, **kwargs):
+        """Apply a buff/debuff (ex: poison, regen)."""
+        self.status_effects[name] = {"duration": duration, "timer": 0, **kwargs}
+
+    def update_status_effects(self, dt):
+        expired = []
+        for effect, data in self.status_effects.items():
+            data["timer"] += dt
+            if effect == "poison" and data["timer"] >= 1000:
+                self.take_damage(data.get("tick_damage", 1), pygame.time.get_ticks())
+                data["timer"] = 0
+            if data["duration"] <= 0:
+                expired.append(effect)
+            else:
+                data["duration"] -= dt
+        for effect in expired:
+            del self.status_effects[effect]
+
+    # ------------------------
+    # Update Loop
+    # ------------------------
     def update(self, dt, current_time):
-        """Update timers like invulnerability cooldown."""
         if self.is_invulnerable and current_time - self.invulnerability_timer >= self.invulnerability_duration:
             self.is_invulnerable = False
-
-    def get_total_damage(self, equipped_weapon):
-        """Return base damage + weapon damage."""
-        weapon_damage = equipped_weapon.damage if equipped_weapon else 0
-        return self.damage + weapon_damage
+        self.update_status_effects(dt)
+        self.hitbox.center = self.rect.center
 
 class Enemy:
     def __init__(self, x, y, enemy_type="orc"):
-        self.rect = pygame.Rect(x, y, PLAYER_SIZE, PLAYER_SIZE)
+        # Sprite + rect
+        self.image = pygame.Surface((PLAYER_SIZE, PLAYER_SIZE), pygame.SRCALPHA)
+        self.rect = self.image.get_rect(topleft=(x, y))
+
+        # Smaller hitbox for fair collisions
+        self.hitbox = self.rect.inflate(-PLAYER_SIZE // 3, -PLAYER_SIZE // 3)
+
+        # Enemy type stats
         self.type = enemy_type
-        self.health = 50 if enemy_type == "orc" else 30  # Slightly more HP
+        if enemy_type == "orc":
+            self.health = 50
+            self.damage = 15
+            base_xp = 30
+        else:
+            self.health = 30
+            self.damage = 10
+            base_xp = 20
+
         self.max_health = self.health
-        self.damage = 15 if enemy_type == "orc" else 10  # Slightly more damage
         self.speed = ENEMY_SPEED
         self.last_attack_time = 0
         self.state = "idle"  # idle, chasing, attacking
         self.target = None
 
         # XP reward scales with player level
-        base_xp = 30 if enemy_type == "orc" else 20
         self.experience_reward = base_xp + (player.level * 5)
 
-        # Animation
+        # Animation control
         self.frame_index = 0
         self.frame_timer = 0
         self.frame_delay = 200
 
-        # AI
+        # Idle movement
         self.path_timer = 0
-        self.random_direction = random.choice([(1, 0), (-1, 0), (0, 1), (0, -1)])
+        self.random_direction = random.choice([(1, 0), (-1, 0), (0, 1), (0, -1), (0, 0)])
 
+    # ------------------------
+    # Core Combat
+    # ------------------------
     def take_damage(self, damage_amount):
         self.health -= damage_amount
-        # show floating text when the enemy takes damage
         floating_texts.append(FloatingText(
             f"-{damage_amount}",
             (self.rect.x, self.rect.y - 15),
@@ -244,22 +315,28 @@ class Enemy:
         return current_time - self.last_attack_time >= ENEMY_ATTACK_COOLDOWN
 
     def attack_player(self, player_world_rect, current_time):
-        if self.can_attack(current_time) and self.rect.colliderect(player_world_rect.inflate(ENEMY_ATTACK_RANGE, ENEMY_ATTACK_RANGE)):
+        attack_range_rect = self.hitbox.inflate(ENEMY_ATTACK_RANGE, ENEMY_ATTACK_RANGE)
+        if self.can_attack(current_time) and attack_range_rect.colliderect(player_world_rect):
             self.last_attack_time = current_time
             return True
         return False
 
+    # ------------------------
+    # AI + Movement
+    # ------------------------
     def update(self, dt, current_time, player_world_rect, obstacles):
-        # Animation
+        # Animate
         self.frame_timer += dt
         if self.frame_timer >= self.frame_delay:
             self.frame_index = (self.frame_index + 1) % 4
             self.frame_timer = 0
 
-        # AI Logic
-        distance_to_player = math.sqrt((self.rect.centerx - player_world_rect.centerx) ** 2 +
-                                       (self.rect.centery - player_world_rect.centery) ** 2)
+        # Distance to player
+        dx = player_world_rect.centerx - self.hitbox.centerx
+        dy = player_world_rect.centery - self.hitbox.centery
+        distance_to_player = math.hypot(dx, dy)
 
+        # State logic
         if distance_to_player <= ENEMY_AGGRO_RANGE:
             self.state = "chasing"
             self.target = player_world_rect
@@ -271,39 +348,40 @@ class Enemy:
         old_rect = self.rect.copy()
 
         if self.state == "chasing" and self.target:
-            dx = self.target.centerx - self.rect.centerx
-            dy = self.target.centery - self.rect.centery
-
-            if dx != 0 or dy != 0:
-                length = math.sqrt(dx * dx + dy * dy)
-                dx = (dx / length) * self.speed
-                dy = (dy / length) * self.speed
-
-                self.rect.x += dx
-                self.rect.y += dy
+            if distance_to_player > ENEMY_ATTACK_RANGE * 0.8:  # stop if close enough
+                dx /= distance_to_player
+                dy /= distance_to_player
+                self.rect.x += dx * self.speed
+                self._resolve_collisions(obstacles, axis="x", old_rect=old_rect)
+                self.rect.y += dy * self.speed
+                self._resolve_collisions(obstacles, axis="y", old_rect=old_rect)
 
         elif self.state == "idle":
-            # Random wandering
             self.path_timer += dt
-            if self.path_timer >= 2000:
+            if self.path_timer >= 2000:  # change direction every 2s
                 self.random_direction = random.choice([(1, 0), (-1, 0), (0, 1), (0, -1), (0, 0)])
                 self.path_timer = 0
 
             dx, dy = self.random_direction
             self.rect.x += dx * self.speed * 0.5
+            self._resolve_collisions(obstacles, axis="x", old_rect=old_rect)
             self.rect.y += dy * self.speed * 0.5
+            self._resolve_collisions(obstacles, axis="y", old_rect=old_rect)
 
-        # Collision detection with obstacles
-        collision = False
+        # Sync hitbox with sprite
+        self.hitbox.center = self.rect.center
+
+    # ------------------------
+    # Collision helper
+    # ------------------------
+    def _resolve_collisions(self, obstacles, axis, old_rect):
         for obstacle in obstacles:
             if self.rect.colliderect(obstacle):
-                collision = True
+                if axis == "x":
+                    self.rect.x = old_rect.x
+                elif axis == "y":
+                    self.rect.y = old_rect.y
                 break
-
-        if collision:
-            self.rect = old_rect
-            if self.state == "chasing":
-                self.random_direction = random.choice([(1, 0), (-1, 0), (0, 1), (0, -1)])
 
 # --- GAME STATE GLOBALS ---
 player_pos = pygame.Rect(WIDTH // 2, HEIGHT // 2, PLAYER_SIZE, PLAYER_SIZE)
@@ -513,6 +591,74 @@ def load_text_map(filename):
         return create_default_map_data()
     
     return map_data
+
+def load_dungeon_map(filename):
+    """Load a dungeon from a text file."""
+    map_data = {
+        'walls': [],
+        'ore_deposits': [],
+        'spawn_point': (5 * TILE_SIZE, 5 * TILE_SIZE),
+        'exit_point': None
+    }
+    
+    tile_mapping = {
+        '#': 'wall',
+        'O': 'ore', 
+        '@': 'player_spawn',
+        'E': 'exit',
+        '.': 'floor'  # empty space = floor
+    }
+    
+    try:
+        with open(filename, 'r') as f:
+            lines = f.readlines()
+            for row, line in enumerate(lines):
+                for col, char in enumerate(line.strip()):
+                    x, y = col * TILE_SIZE, row * TILE_SIZE
+                    if char in tile_mapping:
+                        if char == '@':
+                            map_data['spawn_point'] = (x, y)
+                        elif char == 'E':
+                            map_data['exit_point'] = pygame.Rect(x, y, TILE_SIZE * 2, TILE_SIZE * 2)
+                        elif char == '#':
+                            map_data['walls'].append(pygame.Rect(x, y, TILE_SIZE, TILE_SIZE))
+                        elif char == 'O':
+                            offset = (TILE_SIZE - (TILE_SIZE // 2)) // 2
+                            map_data['ore_deposits'].append(pygame.Rect(x + offset, y + offset, TILE_SIZE // 2, TILE_SIZE // 2))
+    except FileNotFoundError:
+        print(f"Could not load dungeon map: {filename}")
+        return create_default_dungeon_data()
+    
+    return map_data
+
+def create_default_dungeon_data():
+    """Create default dungeon if file loading fails."""
+    walls = []
+    ore_deposits = []
+    
+    # Create border walls
+    for row in range(DUNGEON_SIZE):
+        for col in range(DUNGEON_SIZE):
+            x = col * TILE_SIZE
+            y = row * TILE_SIZE
+            
+            if row == 0 or row == DUNGEON_SIZE-1 or col == 0 or col == DUNGEON_SIZE-1:
+                walls.append(pygame.Rect(x, y, TILE_SIZE, TILE_SIZE))
+    
+    # Add some ore deposits
+    for _ in range(15):
+        x = random.randint(2, DUNGEON_SIZE-3) * TILE_SIZE
+        y = random.randint(2, DUNGEON_SIZE-3) * TILE_SIZE
+        offset = (TILE_SIZE - (TILE_SIZE // 2)) // 2
+        ore_deposits.append(pygame.Rect(x + offset, y + offset, TILE_SIZE // 2, TILE_SIZE // 2))
+    
+    return {
+        'walls': walls,
+        'ore_deposits': ore_deposits,
+        'spawn_point': (5 * TILE_SIZE, 5 * TILE_SIZE),
+        'exit_point': pygame.Rect((DUNGEON_SIZE-5) * TILE_SIZE, (DUNGEON_SIZE-5) * TILE_SIZE, TILE_SIZE * 2, TILE_SIZE * 2)
+    }
+
 def apply_map_data(map_data):
     """Apply loaded map data to game globals."""
     global tree_rects, house_list, stone_rects, flower_tiles, leaf_tiles
@@ -1009,41 +1155,26 @@ def setup_indoor_colliders():
         pygame.Rect(WIDTH-10, 0, 10, HEIGHT)    # right
     ]
 
-def setup_dungeon():
-    """Creates the dungeon layout with walls, ore deposits, and exit."""
-    global dungeon_walls, dungeon_exit
+def setup_dungeon_from_map(map_name="dungeon1"):
+    """Set up dungeon from a map file."""
+    global dungeon_walls, dungeon_exit, stone_rects
+    
+    # Clear existing dungeon data
     dungeon_walls.clear()
+    # Only clear stone_rects if we're in dungeon (keep world stones)
+    if current_level == "dungeon":
+        stone_rects.clear()
     
-    # Create dungeon walls around the perimeter
-    for row in range(DUNGEON_SIZE):
-        for col in range(DUNGEON_SIZE):
-            x = col * TILE_SIZE
-            y = row * TILE_SIZE
-            
-            # Border walls
-            if row == 0 or row == DUNGEON_SIZE-1 or col == 0 or col == DUNGEON_SIZE-1:
-                dungeon_walls.append(pygame.Rect(x, y, TILE_SIZE, TILE_SIZE))
-            # Add some interior walls for complexity
-            elif (row == 10 and col > 5 and col < 20) or (col == 15 and row > 8 and row < 15):
-                dungeon_walls.append(pygame.Rect(x, y, TILE_SIZE, TILE_SIZE))
+    # Load the map
+    map_data = load_dungeon_map(f"{map_name}.txt")
     
-    # Add ore deposits scattered on the dungeon floor
-    for row in range(2, DUNGEON_SIZE - 2):
-        for col in range(2, DUNGEON_SIZE - 2):
-            x = col * TILE_SIZE
-            y = row * TILE_SIZE
-        
-            # Check if this tile is a wall
-            wall_here = any(pygame.Rect(x, y, TILE_SIZE, TILE_SIZE).colliderect(wall) for wall in dungeon_walls)
+    # Apply the data
+    dungeon_walls.extend(map_data['walls'])
+    stone_rects.extend(map_data['ore_deposits'])
+    dungeon_exit = map_data['exit_point']
+    
+    return map_data['spawn_point']
 
-            # Only place ore on *floor tiles* (not walls)
-            if not wall_here and random.random() < 0.08:  # 8% chance
-                offset = (TILE_SIZE - (TILE_SIZE // 2)) // 2
-                ore_rect = pygame.Rect(x + offset, y + offset, TILE_SIZE // 2, TILE_SIZE // 2)
-                stone_rects.append(ore_rect)
-    
-    # Create exit portal in the bottom-right area
-    dungeon_exit = pygame.Rect((DUNGEON_SIZE-5) * TILE_SIZE, (DUNGEON_SIZE-5) * TILE_SIZE, TILE_SIZE * 2, TILE_SIZE * 2)
 
 def setup_colliders():
     """Generates the world colliders for the current level."""
@@ -1438,7 +1569,87 @@ def draw_world(screen, assets):
     if miner_npc_rect:
         miner_animated_y = miner_npc_rect.y + miner_idle_offset_y
         screen.blit(assets["miner_image"], (miner_npc_rect.x - map_offset_x, miner_animated_y - map_offset_y))
+# Add these functions to your code
 
+def setup_dungeon():
+    """Creates the dungeon layout with walls, ore deposits, and exit."""
+    spawn_point = setup_dungeon_from_map("dungeon1")  # Try to load from file first
+    return spawn_point
+
+# Fix the attack animation in your main drawing section
+# Replace the existing player drawing code with this:
+
+# Draw player with animations
+    if is_attacking:
+        # Use the last_direction for attack animation
+        attack_direction = last_direction if last_direction in attack_frames else "down"
+        frame_index = min(player_frame_index, len(attack_frames[attack_direction]) - 1)
+        scaled_frame = pygame.transform.scale(attack_frames[attack_direction][frame_index], (player_size_current, player_size_current))
+        screen.blit(scaled_frame, player_pos)
+    elif is_chopping or is_mining:
+        # Use the last_direction for chopping animation
+        chop_direction = last_direction if last_direction in chopping_frames else "down"
+        frame_index = min(player_frame_index, len(chopping_frames[chop_direction]) - 1)
+        scaled_frame = pygame.transform.scale(chopping_frames[chop_direction][frame_index], (player_size_current, player_size_current))
+        screen.blit(scaled_frame, player_pos)
+    else:
+        # Normal movement or idle
+        frame_set = player_frames.get(current_direction, player_frames["idle"])
+        frame_index = min(player_frame_index, len(frame_set) - 1)
+        scaled_frame = pygame.transform.scale(frame_set[frame_index], (player_size_current, player_size_current))
+        screen.blit(scaled_frame, player_pos)
+
+# Fix the camera offset bug in dungeon entry
+# In your dungeon entry code, change this line:
+# map_offset_y = spawn_point[1] - WIDTH // 2
+# to:
+# map_offset_y = spawn_point[1] - HEIGHT // 2
+
+# Create your dungeon1.txt file with this content:
+"""
+##############################
+#............................#
+#............................#
+#............................#
+#............................#
+#@...........................#
+#............................#
+#....O.....O.................#
+#............................#
+#............####............#
+#............#..#............#
+#............#..#............#
+#............####............#
+#............................#
+#.........O..................#
+#............................#
+#............................#
+#............................#
+#................O...........#
+#............................#
+#............................#
+#............................#
+#............................#
+#............................#
+#.......................E....#
+#............................#
+#............................#
+#............................#
+##############################
+"""
+
+# Additional debugging function to help identify issues:
+def debug_attack_animation():
+    """Debug function to check attack animation state"""
+    print(f"Is attacking: {is_attacking}")
+    print(f"Last direction: {last_direction}")
+    print(f"Frame index: {player_frame_index}")
+    if last_direction in attack_frames:
+        print(f"Available frames for {last_direction}: {len(attack_frames[last_direction])}")
+    else:
+        print(f"No attack frames for direction: {last_direction}")
+
+# You can call this function when pressing '1' to debug attack issues
 def draw_dungeon(screen, assets, enemy_frames):
     """Draws the dungeon level with enemies."""
     dungeon_width = 30
@@ -2169,6 +2380,11 @@ def use_potion():
         print("No potions available!")
         return False
 
+def setup_dungeon():
+    """Creates the dungeon layout with walls, ore deposits, and exit."""
+    spawn_point = setup_dungeon_from_map("dungeon1")  # Try to load from file first
+    return spawn_point
+
 def main():
     """Main game loop."""
     global map_offset_x, map_offset_y, current_level, current_house_index
@@ -2177,7 +2393,7 @@ def main():
     global is_chopping, chopping_timer, chopping_target_tree, is_swinging
     global is_crafting, crafting_timer, item_to_craft
     global is_mining, mining_timer, mining_target_stone
-    global is_attacking, attack_timer  # Fixed variable name
+    global is_attacking, attack_timer
     global player_pos
     global show_npc_dialog, npc_quest_active, npc_quest_completed
     global show_miner_dialog, miner_quest_active, miner_quest_completed
@@ -2193,11 +2409,12 @@ def main():
     assets = load_assets()
     player_frames = load_player_frames()
     chopping_frames = load_chopping_frames()
-    attack_frames = load_attack_frames()  # Fixed variable name
+    attack_frames = load_attack_frames()
     enemy_frames = load_enemy_frames()
     setup_colliders()
     give_starting_items(assets)
     load_map("forest")
+    
     # Attack animation variables (local to main)
     attack_animation_duration = 600  # ms for attack animation
 
@@ -2247,7 +2464,6 @@ def main():
             handle_combat(current_time)
 
         # Event Handling
-
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 pygame.quit()
@@ -2301,14 +2517,17 @@ def main():
                     if current_level == "world":
                         if dungeon_portal and player_world_rect.colliderect(dungeon_portal.inflate(20, 20)):
                             current_level = "dungeon"
-
-                            # Put player just above the dungeon exit tile
-                            player_pos.center = (5 * TILE_SIZE, 5 * TILE_SIZE)
-
-                            # Camera follows the player
-                            map_offset_x = player_pos.centerx - WIDTH // 2
-                            map_offset_y = player_pos.centery - HEIGHT // 2
-
+            
+                            # Set up dungeon and get spawn point
+                            spawn_point = setup_dungeon()
+            
+                            # Position player at spawn point
+                            player_pos.center = spawn_point
+            
+                            # Camera follows the player - FIXED the bug here
+                            map_offset_x = spawn_point[0] - WIDTH // 2
+                            map_offset_y = spawn_point[1] - HEIGHT // 2  # Fixed: was WIDTH // 2
+            
                             # Reset enemies
                             enemies.clear()
                             for _ in range(3):
@@ -2560,7 +2779,6 @@ def main():
                         
                 # Inventory
                 if show_inventory:
-                    global inventory
                     for row in range(4):
                         for col in range(4):
                             slot_x = INVENTORY_X + INVENTORY_GAP + col * (INVENTORY_SLOT_SIZE + INVENTORY_GAP)
@@ -2606,27 +2824,34 @@ def main():
                 is_crafting = False
                 item_to_craft = None
 
-        # Attack animation
+        # Attack animation - FIXED to prevent crashes
         if is_attacking:
             attack_timer += dt
             player_frame_timer += dt
             if player_frame_timer >= swing_delay:
-                player_frame_index = (player_frame_index + 1) % len(attack_frames[last_direction])
+                # Safety check to prevent crashes
+                attack_direction = last_direction if last_direction in attack_frames else "down"
+                max_frames = len(attack_frames[attack_direction])
+                player_frame_index = (player_frame_index + 1) % max_frames
                 player_frame_timer = 0
-    
+
             if attack_timer >= attack_animation_duration:
                 is_attacking = False
                 attack_timer = 0
+                player_frame_index = 0  # Reset frame
                 current_direction = "idle"
 
-        # Chopping animation
+        # Chopping animation - FIXED to prevent crashes
         if is_chopping:
             chopping_timer += dt
             player_frame_timer += dt
             if player_frame_timer > idle_chop_delay:
                 is_swinging = True
                 if player_frame_timer >= swing_delay:
-                    player_frame_index = (player_frame_index + 1) % len(chopping_frames[last_direction])
+                    # Safety check to prevent crashes
+                    chop_direction = last_direction if last_direction in chopping_frames else "down"
+                    max_frames = len(chopping_frames[chop_direction])
+                    player_frame_index = (player_frame_index + 1) % max_frames
                     player_frame_timer = 0
 
             if chopping_timer >= CHOPPING_DURATION:
@@ -2641,14 +2866,17 @@ def main():
                 chopping_target_tree = None
                 current_direction = "idle"
 
-        # Mining animation
+        # Mining animation - FIXED to prevent crashes
         if is_mining:
             mining_timer += dt
             player_frame_timer += dt
             if player_frame_timer > idle_chop_delay:
                 is_swinging = True
                 if player_frame_timer >= swing_delay:
-                    player_frame_index = (player_frame_index + 1) % len(chopping_frames[last_direction])
+                    # Safety check to prevent crashes
+                    chop_direction = last_direction if last_direction in chopping_frames else "down"
+                    max_frames = len(chopping_frames[chop_direction])
+                    player_frame_index = (player_frame_index + 1) % max_frames
                     player_frame_timer = 0
 
             if mining_timer >= MINING_DURATION:
@@ -2681,28 +2909,38 @@ def main():
                 stone_rects.append(stone_rect)
                 del chopped_stones[stone_rect_tuple]
 
+
         # Player Movement
         if not (show_inventory or show_crafting or show_equipment or is_chopping or is_mining or is_attacking or show_npc_dialog or show_miner_dialog):
             keys = pygame.key.get_pressed()
             dx, dy = handle_movement(keys)
-            
+    
             if current_level == "world" or current_level == "dungeon":
                 new_player_world_rect = get_player_world_rect().move(dx, dy)
                 if not handle_collision(new_player_world_rect):
                     map_offset_x += dx
                     map_offset_y += dy
+                    # 👇 Add this
+                    if dx != 0 or dy != 0:
+                        last_direction = current_direction
             else:  # current_level == "house"
                 new_player_pos = player_pos.move(dx, dy)
                 if not handle_collision(new_player_pos):
                     player_pos = new_player_pos
+                    # 👇 Add this
+                    if dx != 0 or dy != 0:
+                        last_direction = current_direction
 
-        # Animation state update
+        # Animation state update - FIXED to prevent crashes
         if not is_chopping and not is_mining and not is_attacking:
             player_frame_timer += dt
             if current_direction == "idle":
                 player_frame_index = 0
             elif player_frame_timer > player_frame_delay:
-                player_frame_index = (player_frame_index + 1) % len(player_frames[current_direction])
+                # Safety check to prevent crashes
+                frame_set = player_frames.get(current_direction, player_frames["idle"])
+                max_frames = len(frame_set)
+                player_frame_index = (player_frame_index + 1) % max_frames
                 player_frame_timer = 0
                 
         # Drawing
@@ -2717,16 +2955,21 @@ def main():
         # Determine the current size of the player for drawing
         player_size_current = player_pos.width
 
-        # Draw player with animations
+        # Draw player with animations - COMPLETELY FIXED to prevent crashes
         if is_attacking:
-            scaled_frame = pygame.transform.scale(attack_frames[last_direction][player_frame_index], (player_size_current, player_size_current))
+            attack_direction = last_direction if last_direction in attack_frames else "down"
+            frame_index = min(player_frame_index, len(attack_frames[attack_direction]) - 1)
+            scaled_frame = pygame.transform.scale(attack_frames[attack_direction][frame_index], (player_size_current, player_size_current))
             screen.blit(scaled_frame, player_pos)
         elif is_chopping or is_mining:
-            scaled_frame = pygame.transform.scale(chopping_frames[last_direction][player_frame_index], (player_size_current, player_size_current))
+            chop_direction = last_direction if last_direction in chopping_frames else "down"
+            frame_index = min(player_frame_index, len(chopping_frames[chop_direction]) - 1)
+            scaled_frame = pygame.transform.scale(chopping_frames[chop_direction][frame_index], (player_size_current, player_size_current))
             screen.blit(scaled_frame, player_pos)
         else:
             frame_set = player_frames.get(current_direction, player_frames["idle"])
-            scaled_frame = pygame.transform.scale(frame_set[player_frame_index], (player_size_current, player_size_current))
+            frame_index = min(player_frame_index, len(frame_set) - 1)
+            scaled_frame = pygame.transform.scale(frame_set[frame_index], (player_size_current, player_size_current))
             screen.blit(scaled_frame, player_pos)
 
         # Draw UI elements
