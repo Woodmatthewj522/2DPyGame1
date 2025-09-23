@@ -28,7 +28,9 @@ ENEMY_SPEED = 2
 ENEMY_AGGRO_RANGE = 150
 ENEMY_ATTACK_RANGE = 60
 ENEMY_ATTACK_COOLDOWN = 1500
-
+# Attack animation state
+is_attacking = False
+attack_timer = 0
 # Player constants
 PLAYER_SIZE_INDOOR = 80
 PLAYER_MAX_HEALTH = 100
@@ -62,6 +64,8 @@ EQUIPMENT_Y = (HEIGHT - EQUIPMENT_PANEL_HEIGHT) // 2
 DUNGEON_SIZE = 30
 DUNGEON_SPAWN_X = 5 * TILE_SIZE
 DUNGEON_SPAWN_Y = 5 * TILE_SIZE
+
+
 
 # --- CLASSES ---
 class Item:
@@ -324,12 +328,6 @@ is_swinging = False
 swing_delay = 150
 idle_chop_delay = 500
 
-# Combat state
-is_attacking = False
-attack_animation_timer = 0
-attack_animation_duration = 300
-target_enemy = None  # Currently targeted enemy
-
 # Stone specific state
 is_mining = False
 mining_timer = 0
@@ -406,6 +404,12 @@ potion_button_rect = None
 smithing_tab_rect = None
 alchemy_tab_rect = None
 
+# Game state management
+game_state = "main_menu"  # "main_menu", "playing", "save_select"
+selected_save_slot = 1
+save_slots = [None, None, None, None]  # 4 save slots
+menu_selected_option = 0
+
 # --- HELPERS FOR COORDINATES ---
 def get_player_world_rect():
     """Return the player's rectangle in world coordinates."""
@@ -449,7 +453,118 @@ def find_nearest_enemy(player_world_rect):
             min_distance = distance
     
     return nearest_enemy
-
+def load_text_map(filename):
+    """Load a map from a text file."""
+    map_data = {
+        'tiles': [],
+        'entities': [],
+        'spawn_point': (WIDTH // 2, HEIGHT // 2),
+        'borders': []
+    }
+    
+    tile_mapping = {
+        'G': 'grass',
+        'T': 'tree', 
+        'S': 'stone',
+        'H': 'house',
+        'P': 'portal',
+        'N': 'npc',
+        'M': 'miner',
+        'F': 'flower',
+        'L': 'leaf',
+        '@': 'player_spawn',
+        '.': 'grass'  # empty space = grass
+    }
+    
+    try:
+        with open(filename, 'r') as f:
+            lines = f.readlines()
+            for row, line in enumerate(lines):
+                for col, char in enumerate(line.strip()):
+                    x, y = col * TILE_SIZE, row * TILE_SIZE
+                    if char in tile_mapping:
+                        if char == '@':
+                            map_data['spawn_point'] = (x, y)
+                        elif char in ['N', 'M', 'P', 'H']:
+                            map_data['entities'].append({
+                                'type': tile_mapping[char],
+                                'pos': (x, y)
+                            })
+                        elif char == 'T':
+                            map_data['borders'].append(pygame.Rect(x + 5, y + 5, TILE_SIZE - 10, TILE_SIZE - 10))
+                        elif char == 'S':
+                            offset = (TILE_SIZE - (TILE_SIZE // 2)) // 2
+                            map_data['tiles'].append({
+                                'type': 'stone',
+                                'rect': pygame.Rect(x + offset, y + offset, TILE_SIZE // 2, TILE_SIZE // 2)
+                            })
+                        elif char == 'F':
+                            map_data['tiles'].append({
+                                'type': 'flower',
+                                'pos': (x + 10, y + 10, random.randint(0, 1))
+                            })
+                        elif char == 'L':
+                            map_data['tiles'].append({
+                                'type': 'leaf',
+                                'pos': (x + random.randint(8, 14), y + random.randint(8, 14))
+                            })
+    except FileNotFoundError:
+        print(f"Could not load map: {filename}")
+        return create_default_map_data()
+    
+    return map_data
+def apply_map_data(map_data):
+    """Apply loaded map data to game globals."""
+    global tree_rects, house_list, stone_rects, flower_tiles, leaf_tiles
+    global npc_rect, miner_npc_rect, dungeon_portal, player_pos, map_offset_x, map_offset_y
+    
+    # Clear existing data
+    tree_rects.clear()
+    house_list.clear() 
+    stone_rects.clear()
+    flower_tiles.clear()
+    leaf_tiles.clear()
+    
+    # Apply borders (trees)
+    tree_rects.extend(map_data['borders'])
+    
+    # Apply tiles
+    for tile in map_data['tiles']:
+        if tile['type'] == 'stone':
+            stone_rects.append(tile['rect'])
+        elif tile['type'] == 'flower':
+            flower_tiles.append(tile['pos'])
+        elif tile['type'] == 'leaf':
+            leaf_tiles.append(tile['pos'])
+    
+    # Apply entities
+    for entity in map_data['entities']:
+        x, y = entity['pos']
+        if entity['type'] == 'house':
+            house_rect = pygame.Rect(x, y, TILE_SIZE * 2, TILE_SIZE * 2)
+            house_list.append(house_rect)
+            tree_rects.append(house_rect)  # Houses are also collision objects
+        elif entity['type'] == 'portal':
+            dungeon_portal = pygame.Rect(x, y, 50, 50)
+            tree_rects.append(dungeon_portal)
+        elif entity['type'] == 'npc':
+            npc_rect = pygame.Rect(x, y, PLAYER_SIZE * 4, PLAYER_SIZE * 4)
+        elif entity['type'] == 'miner':
+            miner_npc_rect = pygame.Rect(x, y, PLAYER_SIZE, PLAYER_SIZE)
+    
+    # Set player spawn position
+    spawn_x, spawn_y = map_data['spawn_point']
+    map_offset_x = spawn_x - WIDTH // 2
+    map_offset_y = spawn_y - HEIGHT // 2
+    player_pos.center = (WIDTH // 2, HEIGHT // 2)
+def create_default_map_data():
+    """Create default map if file loading fails."""
+    return {
+        'tiles': [],
+        'entities': [],
+        'spawn_point': (WIDTH // 2, HEIGHT // 2),
+        'borders': []
+    }
 # --- INIT ---
 def init():
     """Initializes Pygame and sets up the screen."""
@@ -488,7 +603,152 @@ def load_player_frames():
             "idle": [fallback_frame]
         }
     return frames
+def save_game_data(slot_number):
+    """Save current game state to a file."""
+    save_data = {
+        'player': {
+            'level': player.level,
+            'health': player.health,
+            'max_health': player.max_health,
+            'damage': player.damage,
+            'experience': player.experience,
+            'experience_to_next': player.experience_to_next,
+            'position': {'x': player_pos.x, 'y': player_pos.y}
+        },
+        'world': {
+            'current_level': current_level,
+            'map_offset_x': map_offset_x,
+            'map_offset_y': map_offset_y
+        },
+        'inventory': [[{'name': item.name, 'count': item.count, 'category': item.category, 'damage': item.damage} if item else None 
+                      for item in row] for row in inventory],
+        'equipment': {
+            'weapon': {'name': equipment_slots['weapon'].name, 'category': equipment_slots['weapon'].category, 'damage': equipment_slots['weapon'].damage} if equipment_slots['weapon'] else None
+        },
+        'quests': {
+            'npc_quest_active': npc_quest_active,
+            'npc_quest_completed': npc_quest_completed,
+            'miner_quest_active': miner_quest_active,
+            'miner_quest_completed': miner_quest_completed
+        },
+        'timestamp': pygame.time.get_ticks()
+    }
+    
+    try:
+        with open(f"save_slot_{slot_number}.json", 'w') as f:
+            json.dump(save_data, f, indent=2)
+        print(f"Game saved to slot {slot_number}")
+        return True
+    except Exception as e:
+        print(f"Failed to save: {e}")
+        return False
 
+def load_game_data(slot_number):
+    """Load game state from a file."""
+    try:
+        with open(f"save_slot_{slot_number}.json", 'r') as f:
+            save_data = json.load(f)
+        
+        # Restore player data
+        player.level = save_data['player']['level']
+        player.health = save_data['player']['health']
+        player.max_health = save_data['player']['max_health']
+        player.damage = save_data['player']['damage']
+        player.experience = save_data['player']['experience']
+        player.experience_to_next = save_data['player']['experience_to_next']
+        
+        # Restore world state
+        global current_level, map_offset_x, map_offset_y, player_pos
+        current_level = save_data['world']['current_level']
+        map_offset_x = save_data['world']['map_offset_x']
+        map_offset_y = save_data['world']['map_offset_y']
+        player_pos.x = save_data['player']['position']['x']
+        player_pos.y = save_data['player']['position']['y']
+        
+        # Restore inventory
+        global inventory
+        for row in range(4):
+            for col in range(4):
+                item_data = save_data['inventory'][row][col]
+                if item_data:
+                    # You'll need to recreate the item with proper image
+                    inventory[row][col] = recreate_item_from_data(item_data)
+                else:
+                    inventory[row][col] = None
+        
+        # Restore equipment
+        weapon_data = save_data['equipment']['weapon']
+        if weapon_data:
+            equipment_slots['weapon'] = recreate_item_from_data(weapon_data)
+        else:
+            equipment_slots['weapon'] = None
+            
+        # Restore quest states
+        global npc_quest_active, npc_quest_completed, miner_quest_active, miner_quest_completed
+        npc_quest_active = save_data['quests']['npc_quest_active']
+        npc_quest_completed = save_data['quests']['npc_quest_completed']
+        miner_quest_active = save_data['quests']['miner_quest_active']
+        miner_quest_completed = save_data['quests']['miner_quest_completed']
+        
+        print(f"Game loaded from slot {slot_number}")
+        return True
+        
+    except FileNotFoundError:
+        print(f"No save file found in slot {slot_number}")
+        return False
+    except Exception as e:
+        print(f"Failed to load save: {e}")
+        return False
+
+def recreate_item_from_data(item_data):
+    """Recreate an Item object from saved data."""
+    # You'll need access to your assets to get the proper image
+    # For now, create a basic item - you may need to modify this
+    return Item(item_data['name'], None, item_data['count'], item_data['category'], item_data['damage'])
+
+def load_save_slots():
+    """Check which save slots have data."""
+    global save_slots
+    for i in range(4):
+        try:
+            with open(f"save_slot_{i+1}.json", 'r') as f:
+                save_data = json.load(f)
+                save_slots[i] = {
+                    'level': save_data['player']['level'],
+                    'timestamp': save_data['timestamp']
+                }
+        except:
+            save_slots[i] = None
+
+def start_new_game():
+    """Initialize a new game with default values."""
+    global current_level, map_offset_x, map_offset_y, player_pos
+    global inventory, equipment_slots, npc_quest_active, npc_quest_completed
+    global miner_quest_active, miner_quest_completed
+    
+    # Reset player
+    player.level = 1
+    player.health = PLAYER_MAX_HEALTH
+    player.max_health = PLAYER_MAX_HEALTH
+    player.damage = PLAYER_BASE_DAMAGE
+    player.experience = 0
+    player.experience_to_next = 100
+    
+    # Reset world
+    current_level = "world"
+    map_offset_x = 0
+    map_offset_y = 0
+    player_pos.center = (WIDTH // 2, HEIGHT // 2)
+    
+    # Reset inventory and equipment
+    inventory = [[None for _ in range(4)] for _ in range(4)]
+    equipment_slots = {"weapon": None}
+    
+    # Reset quests
+    npc_quest_active = False
+    npc_quest_completed = False
+    miner_quest_active = False
+    miner_quest_completed = False
 def load_chopping_frames():
     """Loads and scales the chopping animation frames."""
     try:
@@ -509,6 +769,29 @@ def load_chopping_frames():
             "down": [fallback_frame]
         }
     return chopping_frames
+
+def load_attack_frames():
+    """Loads and scales the attack animation frames."""
+    try:
+        sheet = pygame.image.load("Player.PNG").convert_alpha()
+        attack_frames = {}
+        # Attack animations are typically in a specific row - you'll need to adjust these coordinates
+        # Based on your sprite sheet layout, find the attack animation rows
+        attack_frames["right"] = [pygame.transform.scale(sheet.subsurface(pygame.Rect(col * 32, 160, 32, 32)), (PLAYER_SIZE, PLAYER_SIZE)) for col in range(4)]
+        attack_frames["left"] = [pygame.transform.flip(frame, True, False) for frame in attack_frames["right"]]
+        attack_frames["up"] = [pygame.transform.scale(sheet.subsurface(pygame.Rect(col * 32, 128, 32, 32)), (PLAYER_SIZE, PLAYER_SIZE)) for col in range(4)]
+        attack_frames["down"] = [pygame.transform.scale(sheet.subsurface(pygame.Rect(col * 32, 192, 32, 32)), (PLAYER_SIZE, PLAYER_SIZE)) for col in range(4)]
+    except:
+        # Fallback attack frames
+        fallback_frame = pygame.Surface((PLAYER_SIZE, PLAYER_SIZE))
+        fallback_frame.fill((255, 100, 100))  # Red tint for attack
+        attack_frames = {
+            "right": [fallback_frame],
+            "left": [fallback_frame],
+            "up": [fallback_frame],
+            "down": [fallback_frame]
+        }
+    return attack_frames
 
 def load_enemy_frames():
     """Loads and scales enemy frames."""
@@ -767,96 +1050,85 @@ def setup_colliders():
     global tree_rects, house_list, indoor_colliders, flower_tiles, leaf_tiles, stone_rects
     global npc_rect, dungeon_portal, miner_npc_rect
 
-    # Clear existing colliders
-    tree_rects.clear()
-    flower_tiles.clear()
-    leaf_tiles.clear()
-    house_list.clear()
-    stone_rects.clear()
-
-    player_world_rect = get_player_world_rect()
-    map_cols, map_rows = 50, 50
-    occupied_positions = set()  # Track occupied grid positions
-
-    # --- BORDER TREES ---
-    for row in range(map_rows):
-        for col in range(map_cols):
-            x = col * TILE_SIZE
-            y = row * TILE_SIZE
-            if row < BORDER_THICKNESS or row >= map_rows - BORDER_THICKNESS or col < BORDER_THICKNESS or col >= map_cols - BORDER_THICKNESS:
-                tree_rects.append(pygame.Rect(x + 5, y + 5, TILE_SIZE - 10, TILE_SIZE - 10))
-                occupied_positions.add((col, row))
-
-    # --- HOUSES ---
-    # Find safe positions for houses
-    safe_house_x = 10 * TILE_SIZE  # Start further from spawn
-    safe_house_y = 10 * TILE_SIZE
+    if current_level == "world":
+        # Try to load current map, fallback to procedural generation
+        if hasattr(setup_colliders, 'current_map'):
+            map_data = load_text_map(setup_colliders.current_map)
+            apply_map_data(map_data)
+        else:
+            # Fallback to your existing procedural generation
+            generate_procedural_world()
+def draw_main_menu(screen, assets):
+    """Draw the main menu screen."""
+    screen.fill((20, 30, 40))  # Dark blue background
     
-    house_rect_1 = pygame.Rect(safe_house_x, safe_house_y, TILE_SIZE * 2, TILE_SIZE * 2)
-    house_rect_2 = pygame.Rect(safe_house_x + 200, safe_house_y, TILE_SIZE * 2, TILE_SIZE * 2)
-    tree_rects.extend([house_rect_1, house_rect_2])
-    house_list.extend([house_rect_1, house_rect_2])
+    # Title
+    title_text = assets["large_font"].render("Adventure Game", True, (255, 255, 255))
+    title_rect = title_text.get_rect(center=(WIDTH // 2, HEIGHT // 4))
+    screen.blit(title_text, title_rect)
     
-    # Mark house positions as occupied
-    for house in house_list:
-        for dx in range(-1, 3):  # Extra buffer around houses
-            for dy in range(-1, 3):
-                grid_x = (house.x // TILE_SIZE) + dx
-                grid_y = (house.y // TILE_SIZE) + dy
-                if 0 <= grid_x < map_cols and 0 <= grid_y < map_rows:
-                    occupied_positions.add((grid_x, grid_y))
-
-    # NPCs in safe positions
-    npc_rect = pygame.Rect(house_rect_1.x - 60, house_rect_1.y + 30, PLAYER_SIZE * 4, PLAYER_SIZE * 4)
+    # Menu options
+    menu_options = ["New Game", "Load Game", "Exit"]
     
-    # --- DUNGEON PORTAL ---
-    dungeon_portal = pygame.Rect(1270, 1915, 50, 50)
-    tree_rects.append(dungeon_portal)
+    for i, option in enumerate(menu_options):
+        color = (255, 255, 0) if i == menu_selected_option else (255, 255, 255)
+        option_text = assets["font"].render(option, True, color)
+        option_rect = option_text.get_rect(center=(WIDTH // 2, HEIGHT // 2 + i * 50))
+        screen.blit(option_text, option_rect)
+        
+        # Draw selection indicator
+        if i == menu_selected_option:
+            pygame.draw.rect(screen, (255, 255, 0), option_rect.inflate(20, 10), 2)
+
+def draw_save_select_menu(screen, assets):
+    """Draw the save slot selection screen."""
+    screen.fill((30, 20, 40))  # Different background
     
-    # Mark portal area as occupied
-    portal_grid_x = dungeon_portal.x // TILE_SIZE
-    portal_grid_y = dungeon_portal.y // TILE_SIZE
-    for dx in range(-1, 2):
-        for dy in range(-1, 2):
-            grid_x = portal_grid_x + dx
-            grid_y = portal_grid_y + dy
-            if 0 <= grid_x < map_cols and 0 <= grid_y < map_rows:
-                occupied_positions.add((grid_x, grid_y))
-
-    # Miner NPC near portal
-    miner_npc_rect = pygame.Rect(dungeon_portal.x - 40, dungeon_portal.y, PLAYER_SIZE, PLAYER_SIZE)
-
-    # --- RANDOM WORLD OBJECTS (avoiding occupied positions) ---
-    for row in range(map_rows):
-        for col in range(map_cols):
-            # Skip borders and occupied positions
-            if row < BORDER_THICKNESS or row >= map_rows - BORDER_THICKNESS or col < BORDER_THICKNESS or col >= map_cols - BORDER_THICKNESS:
-                continue
-            if (col, row) in occupied_positions:
-                continue
-
-            x = col * TILE_SIZE
-            y = row * TILE_SIZE
-            rnd = random.random()
+    # Title
+    title_text = assets["large_font"].render("Select Save Slot", True, (255, 255, 255))
+    title_rect = title_text.get_rect(center=(WIDTH // 2, HEIGHT // 4))
+    screen.blit(title_text, title_rect)
+    
+    # Save slots
+    for i in range(4):
+        slot_y = HEIGHT // 2 + i * 60 - 120
+        slot_rect = pygame.Rect(WIDTH // 2 - 200, slot_y, 400, 50)
+        
+        # Highlight selected slot
+        color = (100, 100, 100) if i == selected_save_slot - 1 else (50, 50, 50)
+        pygame.draw.rect(screen, color, slot_rect)
+        pygame.draw.rect(screen, (255, 255, 255), slot_rect, 2)
+        
+        # Slot content
+        if save_slots[i]:
+            slot_text = f"Slot {i+1}: Level {save_slots[i]['level']}"
+        else:
+            slot_text = f"Slot {i+1}: Empty"
             
-            if rnd < 0.02:  # Trees
-                tree_rects.append(pygame.Rect(x + 5, y + 5, TILE_SIZE - 10, TILE_SIZE - 10))
-                occupied_positions.add((col, row))
-            elif rnd < 0.035:  # Stones (only if no tree here)
-                offset = (TILE_SIZE - (TILE_SIZE // 2)) // 2
-                stone_rects.append(pygame.Rect(x + offset, y + offset, TILE_SIZE // 2, TILE_SIZE // 2))
-            elif rnd < 0.065:  # Flowers
-                flower_tiles.append((x + 10, y + 10, random.randint(0, 1)))
-            elif rnd < 0.185:  # Leaves
-                leaf_tiles.append((x + random.randint(8, 14), y + random.randint(8, 14)))
-
+        text_surf = assets["font"].render(slot_text, True, (255, 255, 255))
+        text_rect = text_surf.get_rect(center=slot_rect.center)
+        screen.blit(text_surf, text_rect)
+    
+    # Instructions
+    instruction_text = assets["small_font"].render("Press ENTER to select, ESC to go back", True, (200, 200, 200))
+    instruction_rect = instruction_text.get_rect(center=(WIDTH // 2, HEIGHT - 50))
+    screen.blit(instruction_text, instruction_rect)
     # --- Indoor colliders ---
     setup_indoor_colliders()
 
     # --- Setup dungeon if needed ---
     if not dungeon_walls:
         setup_dungeon()
-
+def load_map(map_name):
+    """Load a specific map by name."""
+    setup_colliders.current_map = f"{map_name}.txt"
+    setup_colliders()
+    print(f"Loaded map: {map_name}")
+def generate_procedural_world():
+    """Your existing world generation code as fallback."""
+    # Put all your existing setup_colliders code here as a backup
+    # This is your current world generation logic
+    pass  # Replace with your existing code if needed
 def give_starting_items(assets):
     """Adds initial items to the inventory."""
     add_item_to_inventory(assets["potion_item"])
@@ -894,59 +1166,13 @@ def spawn_enemy_in_dungeon():
     print(f"Spawned orc at ({spawn_pos[0]}, {spawn_pos[1]})")
 
 def handle_combat(current_time):
-    """Handles combat between player and enemies."""
-    global is_attacking, attack_animation_timer, current_level, map_offset_x, map_offset_y
-    global target_enemy, current_direction, last_direction
+    """Handles combat between player and enemies (enemy attacks only)."""
+    global current_level, map_offset_x, map_offset_y
     
     player_world_rect = get_player_world_rect()
-    equipped_weapon = equipment_slots.get("weapon")
 
     # Update player's rect for floating text positioning
     player.rect = player_world_rect
-
-    # -------------------------
-    # Player attacking enemies
-    # -------------------------
-    if is_attacking:
-        attack_animation_timer += pygame.time.Clock().get_time()
-        
-        # Face the targeted enemy while attacking
-        if target_enemy and target_enemy in enemies:
-            # Calculate direction to enemy
-            dx = target_enemy.rect.centerx - player_world_rect.centerx
-            dy = target_enemy.rect.centery - player_world_rect.centery
-            
-            # Determine facing direction
-            if abs(dx) > abs(dy):
-                if dx > 0:
-                    current_direction = "right"
-                    last_direction = "right"
-                else:
-                    current_direction = "left"
-                    last_direction = "left"
-            else:
-                if dy > 0:
-                    current_direction = "down"
-                    last_direction = "down"
-                else:
-                    current_direction = "up"
-                    last_direction = "up"
-        
-        if attack_animation_timer >= attack_animation_duration:
-            is_attacking = False
-            attack_animation_timer = 0
-            target_enemy = None  # Clear target after attack
-
-        # Player attack area
-        player_damage = player.get_total_damage(equipped_weapon)
-        attack_rect = player_world_rect.inflate(COMBAT_RANGE, COMBAT_RANGE)
-
-        for enemy in enemies[:]:  # Copy list for safe removal
-            if attack_rect.colliderect(enemy.rect):
-                if enemy.take_damage(player_damage):
-                    player.gain_experience(enemy.experience_reward)
-                    enemies.remove(enemy)
-                    print(f"Defeated {enemy.type}! Gained {enemy.experience_reward} XP")
 
     # -------------------------
     # Enemies attacking player
@@ -968,7 +1194,6 @@ def handle_combat(current_time):
                     player_pos.center = (WIDTH // 2, HEIGHT // 2)
                     player.health = player.max_health // 2  # Respawn with half health
                     enemies.clear()
-                    target_enemy = None  # Clear target on death
 
 # --- INVENTORY/CRAFTING/EQUIPMENT LOGIC ---
 def add_item_to_inventory(item_to_add):
@@ -1054,23 +1279,44 @@ def draw_health_bar(screen, x, y, current_health, max_health, width=100, height=
     # Border
     pygame.draw.rect(screen, (255, 255, 255), bg_rect, 1)
 
-def draw_player_stats(screen, assets):
-    """Draws player stats in the top-left corner."""
+def draw_player_stats(screen, assets, player_frames, attack_frames, chopping_frames):
+    """Draws player stats in the top-left corner with player portrait."""
     y_offset = 10
     
-    # Health bar
-    draw_health_bar(screen, 10, y_offset, player.health, player.max_health, 150, 15)
+    # Draw player portrait (small version of current frame)
+    portrait_size = 32
+    portrait_rect = pygame.Rect(10, y_offset, portrait_size, portrait_size)
+    
+    # Get current player frame
+    if is_attacking:
+        current_frame = attack_frames[last_direction][player_frame_index]
+    elif is_chopping or is_mining:
+        current_frame = chopping_frames[last_direction][player_frame_index]
+    else:
+        frame_set = player_frames.get(current_direction, player_frames["idle"])
+        current_frame = frame_set[player_frame_index]
+    
+    # Scale and draw portrait
+    portrait_frame = pygame.transform.scale(current_frame, (portrait_size, portrait_size))
+    screen.blit(portrait_frame, portrait_rect)
+    
+    # Draw border around portrait
+    pygame.draw.rect(screen, (255, 255, 255), portrait_rect, 2)
+    
+    # Health bar (moved right to make room for portrait)
+    health_bar_x = portrait_rect.right + 10
+    draw_health_bar(screen, health_bar_x, y_offset, player.health, player.max_health, 120, 15)
     health_text = f"Health: {player.health}/{player.max_health}"
     text_surf = assets["small_font"].render(health_text, True, (255, 255, 255))
-    screen.blit(text_surf, (170, y_offset))
+    screen.blit(text_surf, (health_bar_x + 130, y_offset))
     y_offset += 25
     
-    # Level and damage info
+    # Level and damage info (also moved right)
     equipped_weapon = equipment_slots.get("weapon")
     total_damage = player.get_total_damage(equipped_weapon)
     level_text = f"Level {player.level} - Damage: {total_damage}"
     text_surf = assets["small_font"].render(level_text, True, (255, 255, 255))
-    screen.blit(text_surf, (10, y_offset))
+    screen.blit(text_surf, (health_bar_x, y_offset))
 
 def draw_level_up_notification(screen, assets):
     """Draws level up notification in the center of screen."""
@@ -1218,13 +1464,7 @@ def draw_dungeon(screen, assets, enemy_frames):
             if enemy.type in enemy_frames and len(enemy_frames[enemy.type]) > 0:
                 frame = enemy_frames[enemy.type][enemy.frame_index % len(enemy_frames[enemy.type])]
                 screen.blit(frame, enemy_screen_rect)
-            
-            # Draw target indicator for the targeted enemy
-            if target_enemy == enemy:
-                target_outline = pygame.Surface((enemy.rect.width + 8, enemy.rect.height + 8), pygame.SRCALPHA)
-                target_outline.fill((255, 255, 0, 150))  # Yellow glow
-                screen.blit(target_outline, (enemy_screen_rect.x - 4, enemy_screen_rect.y - 4))
-            
+        
             # Draw enemy health bar
             if enemy.health < enemy.max_health:
                 bar_y = enemy_screen_rect.y - 10
@@ -1241,72 +1481,7 @@ def draw_dungeon(screen, assets, enemy_frames):
             floating_texts.remove(text)
         else:
             text.draw(screen, assets["small_font"], map_offset_x, map_offset_y)
-            # Draw the dungeon portal
-    if dungeon_portal:
-        screen.blit(assets["portal"], (dungeon_portal.x - map_offset_x, dungeon_portal.y - map_offset_y))
 
-    # Draw the houses
-    if house_list:
-        screen.blit(assets["house"], (house_list[0].x - map_offset_x, house_list[0].y - map_offset_y))
-        screen.blit(assets["house1"], (house_list[1].x - map_offset_x, house_list[1].y - map_offset_y))
-
-    # Draw NPC with idle animation
-    if npc_rect:
-        animated_y = npc_rect.y + npc_idle_offset_y
-        screen.blit(assets["npc_image"], (npc_rect.x - map_offset_x, animated_y - map_offset_y))
-    
-    # Draw Miner NPC with idle animation
-    if miner_npc_rect:
-        miner_animated_y = miner_npc_rect.y + miner_idle_offset_y
-        screen.blit(assets["miner_image"], (miner_npc_rect.x - map_offset_x, miner_animated_y - map_offset_y))
-
-def draw_dungeon(screen, assets, enemy_frames):
-    """Draws the dungeon level with enemies."""
-    dungeon_width = 30
-    dungeon_height = 30
-
-    # Draw floor tiles
-    for x in range(dungeon_width):
-        for y in range(dungeon_height):
-            screen.blit(assets["dungeon_floor"], (x * TILE_SIZE - map_offset_x, y * TILE_SIZE - map_offset_y))
-
-    # Draw dungeon walls
-    for wall in dungeon_walls:
-        screen.blit(assets["dungeon_wall"], (wall.x - map_offset_x, wall.y - map_offset_y))
-    
-    # Draw ore deposits
-    for ore in stone_rects:
-        screen.blit(assets["ore_img"], (ore.x - map_offset_x, ore.y - map_offset_y))
-
-    # Draw enemies
-    for enemy in enemies:
-        enemy_screen_rect = world_to_screen_rect(enemy.rect)
-        if 0 <= enemy_screen_rect.x <= WIDTH and 0 <= enemy_screen_rect.y <= HEIGHT:  # Only draw if on screen
-            if enemy.type in enemy_frames and len(enemy_frames[enemy.type]) > 0:
-                frame = enemy_frames[enemy.type][enemy.frame_index % len(enemy_frames[enemy.type])]
-                screen.blit(frame, enemy_screen_rect)
-            
-            # Draw target indicator for the targeted enemy
-            if target_enemy == enemy:
-                target_outline = pygame.Surface((enemy.rect.width + 8, enemy.rect.height + 8), pygame.SRCALPHA)
-                target_outline.fill((255, 255, 0, 150))  # Yellow glow
-                screen.blit(target_outline, (enemy_screen_rect.x - 4, enemy_screen_rect.y - 4))
-            
-            # Draw enemy health bar
-            if enemy.health < enemy.max_health:
-                bar_y = enemy_screen_rect.y - 10
-                draw_health_bar(screen, enemy_screen_rect.x, bar_y, enemy.health, enemy.max_health, enemy.rect.width, 5)
-    
-    # Draw exit portal
-    if dungeon_exit:
-        screen.blit(assets["portal"], (dungeon_exit.x - map_offset_x, dungeon_exit.y - map_offset_y))
-
-    # Update floating texts
-    for text in floating_texts[:]:
-        text.update()
-        if not text.is_alive():
-            floating_texts.remove(text)
-        
 def get_shop_items(assets):
     """Returns the items available in the shop with their prices."""
     return {
@@ -1867,22 +2042,68 @@ def draw_hud(screen, assets):
         screen.blit(icon, icon_rect)
         screen.blit(label_text, label_rect)
 
-def draw_combat_ui(screen, assets):
-    """Draws combat-related UI elements."""
-    if current_level == "dungeon":
-        # Show attack cooldown
-        current_time = pygame.time.get_ticks()
-        if not player.can_attack(current_time):
-            cooldown_remaining = COMBAT_COOLDOWN - (current_time - player.last_attack_time)
-            cooldown_text = f"Attack cooldown: {cooldown_remaining}ms"
-            text_surf = assets["small_font"].render(cooldown_text, True, (255, 255, 255))
-            screen.blit(text_surf, (WIDTH - 200, HEIGHT - 30))
+def draw_ability_bar(screen, assets):
+    """Draws a centered ability bar that can be expanded for multiple abilities."""
+    current_time = pygame.time.get_ticks()
+    
+    # Ability bar configuration
+    abilities = [
+        {
+            'key': '1',
+            'name': 'Attack',
+            'available': player.can_attack(current_time),
+            'cooldown_remaining': max(0, COMBAT_COOLDOWN - (current_time - player.last_attack_time)) if not player.can_attack(current_time) else 0
+        }
+        # Future abilities can be added here like:
+        # {'key': '2', 'name': 'Heal', 'available': True, 'cooldown_remaining': 0}
+        # {'key': '3', 'name': 'Dash', 'available': True, 'cooldown_remaining': 0}
+    ]
+    
+    # Bar dimensions
+    button_size = 40  # Smaller than before
+    button_gap = 10
+    bar_width = len(abilities) * button_size + (len(abilities) - 1) * button_gap
+    bar_height = button_size + 20  # Extra height for labels
+    
+    # Center the bar horizontally, place near bottom
+    bar_x = (WIDTH - bar_width) // 2
+    bar_y = HEIGHT - bar_height - 60
+    
+    # Background panel (optional, looks nice)
+    panel_rect = pygame.Rect(bar_x - 10, bar_y - 10, bar_width + 20, bar_height + 20)
+    pygame.draw.rect(screen, (40, 40, 40, 180), panel_rect)
+    pygame.draw.rect(screen, (255, 255, 255), panel_rect, 2)
+    
+    # Draw each ability button
+    for i, ability in enumerate(abilities):
+        button_x = bar_x + i * (button_size + button_gap)
+        button_y = bar_y
+        button_rect = pygame.Rect(button_x, button_y, button_size, button_size)
         
-        # Show enemy count
-        enemy_count_text = f"Enemies: {len(enemies)}"
-        text_surf = assets["small_font"].render(enemy_count_text, True, (255, 255, 255))
-        screen.blit(text_surf, (WIDTH - 120, 100))
-
+        # Button color based on availability
+        if ability['available']:
+            button_color = (0, 120, 0)  # Green when ready
+            text_color = (255, 255, 255)
+            display_text = ability['key']
+        else:
+            button_color = (80, 80, 80)  # Gray when on cooldown
+            text_color = (200, 200, 200)
+            cooldown_seconds = ability['cooldown_remaining'] / 1000.0
+            display_text = f"{cooldown_seconds:.1f}"
+        
+        # Draw button
+        pygame.draw.rect(screen, button_color, button_rect)
+        pygame.draw.rect(screen, (255, 255, 255), button_rect, 2)
+        
+        # Draw key/cooldown text
+        text_surf = assets["small_font"].render(display_text, True, text_color)
+        text_rect = text_surf.get_rect(center=button_rect.center)
+        screen.blit(text_surf, text_rect)
+        
+        # Draw ability name below button
+        name_surf = assets["small_font"].render(ability['name'], True, (255, 255, 255))
+        name_rect = name_surf.get_rect(centerx=button_rect.centerx, top=button_rect.bottom + 2)
+        screen.blit(name_surf, name_rect)
 # --- MAIN GAME LOGIC ---
 def handle_movement(keys):
     """Handles player movement input and updates direction."""
@@ -1956,7 +2177,7 @@ def main():
     global is_chopping, chopping_timer, chopping_target_tree, is_swinging
     global is_crafting, crafting_timer, item_to_craft
     global is_mining, mining_timer, mining_target_stone
-    global is_attacking, attack_animation_timer
+    global is_attacking, attack_timer  # Fixed variable name
     global player_pos
     global show_npc_dialog, npc_quest_active, npc_quest_completed
     global show_miner_dialog, miner_quest_active, miner_quest_completed
@@ -1972,10 +2193,13 @@ def main():
     assets = load_assets()
     player_frames = load_player_frames()
     chopping_frames = load_chopping_frames()
+    attack_frames = load_attack_frames()  # Fixed variable name
     enemy_frames = load_enemy_frames()
     setup_colliders()
     give_starting_items(assets)
-
+    load_map("forest")
+    # Attack animation variables (local to main)
+    attack_animation_duration = 600  # ms for attack animation
 
     while True:
         dt = clock.tick(60)
@@ -2023,18 +2247,38 @@ def main():
             handle_combat(current_time)
 
         # Event Handling
+
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 pygame.quit()
                 sys.exit()
             
             if event.type == pygame.KEYDOWN:
-                # Combat controls
-                if event.key == pygame.K_SPACE and current_level == "dungeon":
-                    if player.attack(current_time):
+                # Combat controls - changed to key "1" (works everywhere now)
+                if event.key == pygame.K_1:
+                    if player.can_attack(current_time):
+                        # Start attack animation
                         is_attacking = True
-                        attack_animation_timer = 0
-                        print("Player attacks!")
+                        attack_timer = 0
+        
+                        # Find nearest enemy to attack
+                        player_world_rect = get_player_world_rect()
+                        target_enemy = find_nearest_enemy(player_world_rect)
+                        if target_enemy:
+                            # Attack the enemy
+                            equipped_weapon = equipment_slots.get("weapon")
+                            player_damage = player.get_total_damage(equipped_weapon)
+                            if target_enemy.take_damage(player_damage):
+                                player.gain_experience(target_enemy.experience_reward)
+                                enemies.remove(target_enemy)
+                                print(f"Defeated {target_enemy.type}! Gained {target_enemy.experience_reward} XP")
+            
+                            player.last_attack_time = current_time
+                            print(f"Player attacks for {player_damage} damage!")
+                        else:
+                            # Still play attack animation even if no target
+                            player.last_attack_time = current_time
+                            print("Attack!")
                 
                 # Use potion
                 if event.key == pygame.K_h:
@@ -2362,6 +2606,19 @@ def main():
                 is_crafting = False
                 item_to_craft = None
 
+        # Attack animation
+        if is_attacking:
+            attack_timer += dt
+            player_frame_timer += dt
+            if player_frame_timer >= swing_delay:
+                player_frame_index = (player_frame_index + 1) % len(attack_frames[last_direction])
+                player_frame_timer = 0
+    
+            if attack_timer >= attack_animation_duration:
+                is_attacking = False
+                attack_timer = 0
+                current_direction = "idle"
+
         # Chopping animation
         if is_chopping:
             chopping_timer += dt
@@ -2425,7 +2682,7 @@ def main():
                 del chopped_stones[stone_rect_tuple]
 
         # Player Movement
-        if not (show_inventory or show_crafting or show_equipment or is_chopping or is_mining or show_npc_dialog or show_miner_dialog):
+        if not (show_inventory or show_crafting or show_equipment or is_chopping or is_mining or is_attacking or show_npc_dialog or show_miner_dialog):
             keys = pygame.key.get_pressed()
             dx, dy = handle_movement(keys)
             
@@ -2440,7 +2697,7 @@ def main():
                     player_pos = new_player_pos
 
         # Animation state update
-        if not is_chopping and not is_mining:
+        if not is_chopping and not is_mining and not is_attacking:
             player_frame_timer += dt
             if current_direction == "idle":
                 player_frame_index = 0
@@ -2460,53 +2717,23 @@ def main():
         # Determine the current size of the player for drawing
         player_size_current = player_pos.width
 
-        # Draw player with special effects
+        # Draw player with animations
         if is_attacking:
-            # Flash player white during attack
-            flash_frame = pygame.Surface((player_size_current, player_size_current))
-            flash_frame.fill((255, 255, 255))
-            if is_chopping or is_mining:
-                scaled_frame = pygame.transform.scale(chopping_frames[last_direction][player_frame_index], (player_size_current, player_size_current))
-            else:
-                frame_set = player_frames.get(current_direction, player_frames["idle"])
-                scaled_frame = pygame.transform.scale(frame_set[player_frame_index], (player_size_current, player_size_current))
-            flash_frame.blit(scaled_frame, (0, 0), special_flags=pygame.BLEND_MULT)
-            screen.blit(flash_frame, player_pos)
-        elif player.is_invulnerable:
-            # Flash player red when taking damage
-            if (current_time // 100) % 2:  # Flash every 100ms
-                flash_frame = pygame.Surface((player_size_current, player_size_current))
-                flash_frame.fill((255, 100, 100))
-                if is_chopping or is_mining:
-                    scaled_frame = pygame.transform.scale(chopping_frames[last_direction][player_frame_index], (player_size_current, player_size_current))
-                else:
-                    frame_set = player_frames.get(current_direction, player_frames["idle"])
-                    scaled_frame = pygame.transform.scale(frame_set[player_frame_index], (player_size_current, player_size_current))
-                flash_frame.blit(scaled_frame, (0, 0), special_flags=pygame.BLEND_MULT)
-                screen.blit(flash_frame, player_pos)
-            else:
-                if is_chopping or is_mining:
-                    scaled_frame = pygame.transform.scale(chopping_frames[last_direction][player_frame_index], (player_size_current, player_size_current))
-                    screen.blit(scaled_frame, player_pos)
-                else:
-                    frame_set = player_frames.get(current_direction, player_frames["idle"])
-                    scaled_frame = pygame.transform.scale(frame_set[player_frame_index], (player_size_current, player_size_current))
-                    screen.blit(scaled_frame, player_pos)
+            scaled_frame = pygame.transform.scale(attack_frames[last_direction][player_frame_index], (player_size_current, player_size_current))
+            screen.blit(scaled_frame, player_pos)
+        elif is_chopping or is_mining:
+            scaled_frame = pygame.transform.scale(chopping_frames[last_direction][player_frame_index], (player_size_current, player_size_current))
+            screen.blit(scaled_frame, player_pos)
         else:
-            # Normal player drawing
-            if is_chopping or is_mining:
-                scaled_frame = pygame.transform.scale(chopping_frames[last_direction][player_frame_index], (player_size_current, player_size_current))
-                screen.blit(scaled_frame, player_pos)
-            else:
-                frame_set = player_frames.get(current_direction, player_frames["idle"])
-                scaled_frame = pygame.transform.scale(frame_set[player_frame_index], (player_size_current, player_size_current))
-                screen.blit(scaled_frame, player_pos)
+            frame_set = player_frames.get(current_direction, player_frames["idle"])
+            scaled_frame = pygame.transform.scale(frame_set[player_frame_index], (player_size_current, player_size_current))
+            screen.blit(scaled_frame, player_pos)
 
         # Draw UI elements
-        draw_player_stats(screen, assets)
+        draw_player_stats(screen, assets, player_frames, attack_frames, chopping_frames)
         draw_experience_bar(screen, assets)  # New XP bar at bottom
         draw_hud(screen, assets)
-        draw_combat_ui(screen, assets)
+        draw_ability_bar(screen, assets)
         draw_tooltip_for_nearby_objects(screen, assets["small_font"])
 
         # Draw dialogs
