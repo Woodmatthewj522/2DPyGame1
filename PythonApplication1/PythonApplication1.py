@@ -468,13 +468,14 @@ level_up_text = ""
 show_level_up = False
 
 # Dungeon objects
+boss1_portal = None
 dungeon_portal = None
 dungeon_walls = []
 dungeon_enemies = []
 dungeon_exit = None
 enemies = []
 floating_texts = []
-
+boss_door_rect = None
 # Crafting button rects
 axe_button_rect = None
 pickaxe_button_rect = None
@@ -551,7 +552,8 @@ def load_text_map(filename):
         'F': 'flower',
         'L': 'leaf',
         '@': 'player_spawn',
-        '.': 'grass'  # empty space = grass
+        '.': 'grass',  # empty space = grass
+        'B': 'boss1_portal'
     }
     
     try:
@@ -605,6 +607,7 @@ def load_dungeon_map(filename):
         '#': 'wall',
         'O': 'ore', 
         '@': 'player_spawn',
+        'B': 'boss1_portal',
         'E': 'exit',
         '.': 'floor'  # empty space = floor
     }
@@ -625,6 +628,8 @@ def load_dungeon_map(filename):
                         elif char == 'O':
                             offset = (TILE_SIZE - (TILE_SIZE // 2)) // 2
                             map_data['ore_deposits'].append(pygame.Rect(x + offset, y + offset, TILE_SIZE // 2, TILE_SIZE // 2))
+                        elif char == 'B':
+                            map_data['boss_portal'] = pygame.Rect(x, y, 50, 50)
     except FileNotFoundError:
         print(f"Could not load dungeon map: {filename}")
         return create_default_dungeon_data()
@@ -663,6 +668,7 @@ def apply_map_data(map_data):
     """Apply loaded map data to game globals."""
     global tree_rects, house_list, stone_rects, flower_tiles, leaf_tiles
     global npc_rect, miner_npc_rect, dungeon_portal, player_pos, map_offset_x, map_offset_y
+    global boss1_portal
     
     # Clear existing data
     tree_rects.clear()
@@ -693,6 +699,9 @@ def apply_map_data(map_data):
         elif entity['type'] == 'portal':
             dungeon_portal = pygame.Rect(x, y, 50, 50)
             tree_rects.append(dungeon_portal)
+        elif entity['type'] == 'boss1_portal':
+            boss1_portal = pygame.Rect(x, y, 50, 50)
+            tree_rects.append(boss1_portal)
         elif entity['type'] == 'npc':
             npc_rect = pygame.Rect(x, y, PLAYER_SIZE * 4, PLAYER_SIZE * 4)
         elif entity['type'] == 'miner':
@@ -968,99 +977,68 @@ def frame_rect_to_surface(sheet, rect):
     return sheet.subsurface(rect).copy()
 
 def load_assets():
-    """Loads all game assets and defines Item objects."""
-    # Create fallback surfaces for missing assets
+    """Loads all game assets, items, NPCs, UI icons, tiles, and boss room assets."""
+
+    # --- Utility ---
     def create_fallback_surface(size, color):
         surf = pygame.Surface(size)
         surf.fill(color)
         return surf
 
-    # Load basic tiles
-    try:
-        tile_folder = "Tiles"
-        grass_image = pygame.transform.scale(pygame.image.load(os.path.join(tile_folder, "grass_middle.png")).convert_alpha(), (TILE_SIZE, TILE_SIZE))
-    except:
-        grass_image = create_fallback_surface((TILE_SIZE, TILE_SIZE), (34, 139, 34))
+    def try_load_image(path, size=None, color=(255, 0, 255)):
+        """Tries to load an image; falls back to colored surface if missing."""
+        try:
+            img = pygame.image.load(path).convert_alpha()
+            if size:
+                img = pygame.transform.scale(img, size)
+            return img
+        except:
+            return create_fallback_surface(size if size else (32, 32), color)
 
-    try:
-        tree_image = pygame.transform.scale(pygame.image.load(os.path.join(tile_folder, "tree.png")).convert_alpha(), (TILE_SIZE + 5, TILE_SIZE + 5))
-    except:
-        tree_image = create_fallback_surface((TILE_SIZE + 5, TILE_SIZE + 5), (101, 67, 33))
+    # --- Tiles ---
+    grass_image = try_load_image(os.path.join("Tiles", "grass_middle.png"), (TILE_SIZE, TILE_SIZE), (34, 139, 34))
+    tree_image = try_load_image(os.path.join("Tiles", "tree.png"), (TILE_SIZE + 5, TILE_SIZE + 5), (101, 67, 33))
+    house_image = try_load_image(os.path.join("Tiles", "house.png"), (TILE_SIZE * 2, TILE_SIZE * 2), (139, 69, 19))
+    house1_image = try_load_image(os.path.join("Tiles", "house1.png"), (TILE_SIZE * 2, TILE_SIZE * 2), (160, 82, 45))
 
-    try:
-        house_image = pygame.transform.scale(pygame.image.load(os.path.join(tile_folder, "house.png")).convert_alpha(), (TILE_SIZE * 2, TILE_SIZE * 2))
-    except:
-        house_image = create_fallback_surface((TILE_SIZE * 2, TILE_SIZE * 2), (139, 69, 19))
-
-    try:
-        house1_image = pygame.transform.scale(pygame.image.load(os.path.join(tile_folder, "house1.png")).convert_alpha(), (TILE_SIZE * 2, TILE_SIZE * 2))
-    except:
-        house1_image = create_fallback_surface((TILE_SIZE * 2, TILE_SIZE * 2), (160, 82, 45))
-
-    # Load OutdoorStuff sheet or create fallbacks
+    # --- Outdoor Stuff (sheet) ---
     try:
         sheet = pygame.image.load("OutdoorStuff.PNG").convert_alpha()
         flower_positions = [(0, 144), (16, 144)]
-        flower_images = [pygame.transform.scale(sheet.subsurface(pygame.Rect(x, y, 16, 16)), (30, 30)) for (x, y) in flower_positions]
+        flower_images = [
+            pygame.transform.scale(sheet.subsurface(pygame.Rect(x, y, 16, 16)), (30, 30))
+            for (x, y) in flower_positions
+        ]
         leaf_image = pygame.transform.scale(sheet.subsurface(pygame.Rect(0, 0, 16, 16)), (25, 25))
-        log_image_rect = pygame.Rect(4, 110, 24, 24)
-        log_image = pygame.transform.scale(sheet.subsurface(log_image_rect), (TILE_SIZE, TILE_SIZE))
+        log_image = pygame.transform.scale(sheet.subsurface(pygame.Rect(4, 110, 24, 24)), (TILE_SIZE, TILE_SIZE))
     except:
-        flower_images = [create_fallback_surface((30, 30), (255, 192, 203)), create_fallback_surface((30, 30), (255, 20, 147))]
+        flower_images = [
+            create_fallback_surface((30, 30), (255, 192, 203)),
+            create_fallback_surface((30, 30), (255, 20, 147))
+        ]
         leaf_image = create_fallback_surface((25, 25), (34, 139, 34))
         log_image = create_fallback_surface((TILE_SIZE, TILE_SIZE), (139, 69, 19))
 
-    # Load individual item images
-    try:
-        potion_image = pygame.transform.scale(pygame.image.load("PotionR.png").convert_alpha(), (TILE_SIZE, TILE_SIZE))
-    except:
-        potion_image = create_fallback_surface((TILE_SIZE, TILE_SIZE), (150, 0, 150))
+    # --- Items ---
+    potion_image = try_load_image("PotionR.png", (TILE_SIZE, TILE_SIZE), (150, 0, 150))
+    coin_image = try_load_image("Coin.png", (TILE_SIZE, TILE_SIZE), (255, 215, 0))
+    axe_image = try_load_image("axe.png", (TILE_SIZE, TILE_SIZE), (139, 69, 19))
+    pickaxe_image = try_load_image("pickaxe.png", (TILE_SIZE, TILE_SIZE), (105, 105, 105))
+    stone_image = try_load_image("stone.png", (TILE_SIZE // 2, TILE_SIZE // 2), (150, 150, 150))
+    ore_image = try_load_image("ore.png", (TILE_SIZE // 2, TILE_SIZE // 2), (139, 69, 19))
 
-    try:
-        coin_image = pygame.transform.scale(pygame.image.load("Coin.png").convert_alpha(), (TILE_SIZE, TILE_SIZE))
-    except:
-        coin_image = create_fallback_surface((TILE_SIZE, TILE_SIZE), (255, 215, 0))
+    # --- UI Icons ---
+    backpack_icon = try_load_image("bag.png", (ICON_SIZE, ICON_SIZE), (101, 67, 33))
+    crafting_icon = try_load_image("craft.png", (ICON_SIZE, ICON_SIZE), (160, 82, 45))
+    equipment_icon = try_load_image("equipped.png", (ICON_SIZE, ICON_SIZE), (105, 105, 105))
 
-    try:
-        axe_image = pygame.transform.scale(pygame.image.load("axe.png").convert_alpha(), (TILE_SIZE, TILE_SIZE))
-    except:
-        axe_image = create_fallback_surface((TILE_SIZE, TILE_SIZE), (139, 69, 19))
-
-    try:
-        pickaxe_image = pygame.transform.scale(pygame.image.load("pickaxe.png").convert_alpha(), (TILE_SIZE, TILE_SIZE))
-    except:
-        pickaxe_image = create_fallback_surface((TILE_SIZE, TILE_SIZE), (105, 105, 105))
-
-    try:
-        stone_image = pygame.transform.scale(pygame.image.load("stone.png").convert_alpha(), (TILE_SIZE // 2, TILE_SIZE // 2))
-    except:
-        stone_image = create_fallback_surface((TILE_SIZE // 2, TILE_SIZE // 2), (150, 150, 150))
-
-    try:
-        ore_image = pygame.transform.scale(pygame.image.load("ore.png").convert_alpha(), (TILE_SIZE // 2, TILE_SIZE // 2))
-    except:
-        ore_image = create_fallback_surface((TILE_SIZE // 2, TILE_SIZE // 2), (139, 69, 19))
-
-    # Load UI icons
-    try:
-        backpack_icon = pygame.transform.scale(pygame.image.load("bag.png").convert_alpha(), (ICON_SIZE, ICON_SIZE))
-    except:
-        backpack_icon = create_fallback_surface((ICON_SIZE, ICON_SIZE), (101, 67, 33))
-
-    try:
-        crafting_icon = pygame.transform.scale(pygame.image.load("craft.png").convert_alpha(), (ICON_SIZE, ICON_SIZE))
-    except:
-        crafting_icon = create_fallback_surface((ICON_SIZE, ICON_SIZE), (160, 82, 45))
-
-    try:
-        equipment_icon = pygame.transform.scale(pygame.image.load("equipped.png").convert_alpha(), (ICON_SIZE, ICON_SIZE))
-    except:
-        equipment_icon = create_fallback_surface((ICON_SIZE, ICON_SIZE), (105, 105, 105))
-
-    # Load NPC images
+    # --- NPCs ---
     try:
         soldier_sheet = pygame.image.load("soldier.png").convert_alpha()
-        npc_image = pygame.transform.scale(soldier_sheet.subsurface(pygame.Rect(0, 0, 100, 100)), (PLAYER_SIZE * 4, PLAYER_SIZE * 4))
+        npc_image = pygame.transform.scale(
+            soldier_sheet.subsurface(pygame.Rect(0, 0, 100, 100)),
+            (PLAYER_SIZE * 4, PLAYER_SIZE * 4)
+        )
     except:
         npc_image = create_fallback_surface((PLAYER_SIZE * 4, PLAYER_SIZE * 4), (255, 255, 0))
 
@@ -1068,29 +1046,126 @@ def load_assets():
         miner_sheet = pygame.image.load("npc1.png").convert_alpha()
         frame_width = miner_sheet.get_width() // 8
         frame_height = miner_sheet.get_height()
-        frame_rect = pygame.Rect(0, 0, frame_width, frame_height)
-        miner_image = pygame.transform.scale(miner_sheet.subsurface(frame_rect), (PLAYER_SIZE, PLAYER_SIZE))
+        miner_image = pygame.transform.scale(
+            miner_sheet.subsurface(pygame.Rect(0, 0, frame_width, frame_height)),
+            (PLAYER_SIZE, PLAYER_SIZE)
+        )
     except:
         miner_image = create_fallback_surface((PLAYER_SIZE, PLAYER_SIZE), (160, 82, 45))
 
-    # Portal and dungeon assets
-    try:
-        portal_image = pygame.image.load("cave.png").convert_alpha()
-        original_width, original_height = portal_image.get_size()
-        scale_factor = 0.1
-        new_width = int(original_width * scale_factor)
-        new_height = int(original_height * scale_factor)
-        portal_image = pygame.transform.smoothscale(portal_image, (new_width, new_height))
-    except:
-        portal_image = create_fallback_surface((50, 50), (64, 0, 128))
+    # --- Portal & Dungeon ---
+    boss1_portal = try_load_image("boss1_portal.png", (50, 50), (128, 0, 128))
+    portal_image = try_load_image("cave.png", (50, 50), (64, 0, 128))
+    dungeon_wall_image = try_load_image("wall.png", (TILE_SIZE, TILE_SIZE), (64, 64, 64))
+    dungeon_floor_image = try_load_image("caveFloor.png", (TILE_SIZE, TILE_SIZE), (32, 32, 32))
 
-    # Load dungeon images
+    # --- Interiors ---
     try:
-        dungeon_wall_image = pygame.transform.scale(pygame.image.load("wall.png").convert_alpha(), (TILE_SIZE, TILE_SIZE))
-        dungeon_floor_image = pygame.transform.scale(pygame.image.load("caveFloor.png").convert_alpha(), (TILE_SIZE, TILE_SIZE))
+        interiors = [
+            pygame.transform.scale(pygame.image.load("indoor2.png").convert_alpha(), (WIDTH, HEIGHT)),
+            pygame.transform.scale(pygame.image.load("indoor3.png").convert_alpha(), (WIDTH, HEIGHT))
+        ]
     except:
-        dungeon_wall_image = create_fallback_surface((TILE_SIZE, TILE_SIZE), (64, 64, 64))
-        dungeon_floor_image = create_fallback_surface((TILE_SIZE, TILE_SIZE), (32, 32, 32))
+        interiors = [
+            create_fallback_surface((WIDTH, HEIGHT), (101, 67, 33)),
+            create_fallback_surface((WIDTH, HEIGHT), (139, 69, 19))
+        ]
+
+    # --- Boss Room ---
+    boss_room_bg = try_load_image("boss_room.png", (WIDTH, HEIGHT), (50, 0, 100))
+
+    # --- Items as objects ---
+    log_item = Item("Log", log_image)
+    axe_item = Item("Axe", axe_image, category="Weapon", damage=20)
+    pickaxe_item = Item("Pickaxe", pickaxe_image, category="Weapon", damage=15)
+    stone_item = Item("Stone", stone_image)
+    ore_item = Item("Ore", ore_image)
+    flower_item = Item("Flower", flower_images[0])
+    potion_item = Item("Potion", potion_image)
+    coin_item = Item("Coin", coin_image)
+
+    # --- Boss Door Frames ---
+    boss_door_frames = load_boss_door_frames()
+
+    # --- Build dictionary ---
+    assets = {
+        # Tiles
+        "grass": grass_image,
+        "tree": tree_image,
+        "house": house_image,
+        "house1": house1_image,
+        "interiors": interiors,
+        "flowers": flower_images,
+        "leaf": leaf_image,
+
+        # Portal / Dungeon
+        "boss1_portal": boss1_portal,
+        "portal": portal_image,
+        "dungeon_wall": dungeon_wall_image,
+        "dungeon_floor": dungeon_floor_image,
+
+        # Fonts
+        "font": pygame.font.SysFont(None, 36),
+        "small_font": pygame.font.SysFont(None, 24),
+        "large_font": pygame.font.SysFont(None, 48),
+
+        # UI
+        "backpack_icon": backpack_icon,
+        "crafting_icon": crafting_icon,
+        "equipment_icon": equipment_icon,
+
+        # Items
+        "log_item": log_item,
+        "axe_item": axe_item,
+        "pickaxe_item": pickaxe_item,
+        "stone_item": stone_item,
+        "ore_item": ore_item,
+        "stone_img": stone_image,
+        "ore_img": ore_image,
+        "flower_item": flower_item,
+        "potion_item": potion_item,
+        "coin_item": coin_item,
+
+        # NPCs
+        "npc_image": npc_image,
+        "miner_image": miner_image,
+
+        # Boss
+        "boss_door_frames": boss_door_frames,
+        "boss_room_bg": boss_room_bg,
+    }
+
+    return assets
+
+
+def load_boss_door_frames():
+    """Load the boss door frames from the sprite sheet."""
+    try:
+        door_sheet = pygame.image.load("boss1_portal.png").convert_alpha()
+        frame_width = door_sheet.get_width() // 12
+        frame_height = door_sheet.get_height()
+
+        closed_door_rect = pygame.Rect(0, 0, frame_width, frame_height)
+        closed_door_frame = door_sheet.subsurface(closed_door_rect).copy()
+
+        door_size = (TILE_SIZE * 2, TILE_SIZE * 2)
+        closed_door_scaled = pygame.transform.scale(closed_door_frame, door_size)
+
+        return {
+            "closed": closed_door_scaled,
+            "frame_width": frame_width,
+            "frame_height": frame_height
+        }
+    except:
+        fallback_door = pygame.Surface((TILE_SIZE * 2, TILE_SIZE * 2))
+        fallback_door.fill((100, 50, 150))
+        return {
+            "closed": fallback_door,
+            "frame_width": 64,
+            "frame_height": 64
+        }
+
+
 
     # Interior images
     try:
@@ -1102,49 +1177,6 @@ def load_assets():
         interior1 = create_fallback_surface((WIDTH, HEIGHT), (101, 67, 33))
         interior2 = create_fallback_surface((WIDTH, HEIGHT), (139, 69, 19))
         interiors = [interior1, interior2]
-
-    # Define Item objects with damage values
-    log_item = Item("Log", log_image)
-    axe_item = Item("Axe", axe_image, category="Weapon", damage=20)
-    pickaxe_item = Item("Pickaxe", pickaxe_image, category="Weapon", damage=15)
-    stone_item = Item("Stone", stone_image)
-    ore_item = Item("Ore", ore_image)
-    flower_item = Item("Flower", flower_images[0])
-    potion_item = Item("Potion", potion_image)
-    coin_item = Item("Coin", coin_image)
-
-    assets = {
-        "grass": grass_image,
-        "tree": tree_image,
-        "house": house_image,
-        "house1": house1_image,
-        "interiors": interiors,
-        "flowers": flower_images,
-        "leaf": leaf_image,
-        "portal": portal_image,
-        "dungeon_wall": dungeon_wall_image,
-        "dungeon_floor": dungeon_floor_image,
-        "font": pygame.font.SysFont(None, 36),
-        "small_font": pygame.font.SysFont(None, 24),
-        "large_font": pygame.font.SysFont(None, 48),
-        "backpack_icon": backpack_icon,
-        "crafting_icon": crafting_icon,
-        "equipment_icon": equipment_icon,
-        "log_item": log_item,
-        "axe_item": axe_item,
-        "pickaxe_item": pickaxe_item,
-        "stone_item": stone_item,
-        "ore_item": ore_item,
-        "stone_img": stone_image,
-        "ore_img": ore_image,
-        "flower_item": flower_item,
-        "potion_item": potion_item,
-        "npc_image": npc_image,
-        "miner_image": miner_image,
-        "coin_item": coin_item,
-    }
-    return assets
-
 def setup_indoor_colliders():
     """Set up collision boundaries for indoor areas."""
     global indoor_colliders
@@ -1157,10 +1189,12 @@ def setup_indoor_colliders():
 
 def setup_dungeon_from_map(map_name="dungeon1"):
     """Set up dungeon from a map file."""
-    global dungeon_walls, dungeon_exit, stone_rects
+    global dungeon_walls, dungeon_exit, stone_rects, boss1_portal
     
     # Clear existing dungeon data
     dungeon_walls.clear()
+    boss1_portal = None
+    
     # Only clear stone_rects if we're in dungeon (keep world stones)
     if current_level == "dungeon":
         stone_rects.clear()
@@ -1173,8 +1207,20 @@ def setup_dungeon_from_map(map_name="dungeon1"):
     stone_rects.extend(map_data['ore_deposits'])
     dungeon_exit = map_data['exit_point']
     
-    return map_data['spawn_point']
-
+    # Set boss portal if it exists - make it bigger for the new sprite
+    if 'boss_portal' in map_data:
+        boss_portal_pos = map_data['boss_portal']
+        boss1_portal = pygame.Rect(boss_portal_pos.x, boss_portal_pos.y, TILE_SIZE * 2, TILE_SIZE * 2)
+    
+    # Fixed spawn positioning
+    spawn_x, spawn_y = map_data['spawn_point']
+    spawn_x += 200  # Move 200px to the right
+    
+    # Ensure spawn is still within dungeon bounds
+    spawn_x = max(2 * TILE_SIZE, min(spawn_x, (DUNGEON_SIZE-3) * TILE_SIZE))
+    spawn_y = max(2 * TILE_SIZE, min(spawn_y, (DUNGEON_SIZE-3) * TILE_SIZE))
+    
+    return (spawn_x, spawn_y)
 
 def setup_colliders():
     """Generates the world colliders for the current level."""
@@ -1250,6 +1296,7 @@ def draw_save_select_menu(screen, assets):
     # --- Setup dungeon if needed ---
     if not dungeon_walls:
         setup_dungeon()
+        boss_door_rect = boss1_portal
 def load_map(map_name):
     """Load a specific map by name."""
     setup_colliders.current_map = f"{map_name}.txt"
@@ -1651,15 +1698,15 @@ def debug_attack_animation():
 
 # You can call this function when pressing '1' to debug attack issues
 def draw_dungeon(screen, assets, enemy_frames):
-    """Draws the dungeon level with enemies."""
+    """Draws the dungeon level with enemies and boss door."""
     dungeon_width = 30
     dungeon_height = 30
-
+    
     # Draw floor tiles
     for x in range(dungeon_width):
         for y in range(dungeon_height):
             screen.blit(assets["dungeon_floor"], (x * TILE_SIZE - map_offset_x, y * TILE_SIZE - map_offset_y))
-
+    
     # Draw dungeon walls
     for wall in dungeon_walls:
         screen.blit(assets["dungeon_wall"], (wall.x - map_offset_x, wall.y - map_offset_y))
@@ -1667,11 +1714,16 @@ def draw_dungeon(screen, assets, enemy_frames):
     # Draw ore deposits
     for ore in stone_rects:
         screen.blit(assets["ore_img"], (ore.x - map_offset_x, ore.y - map_offset_y))
-
+    
+    # Draw boss door if it exists (using the new sprite)
+    if boss1_portal and current_level == "dungeon":
+        boss_door_image = assets["boss_door_frames"]["closed"]
+        screen.blit(boss_door_image, (boss1_portal.x - map_offset_x, boss1_portal.y - map_offset_y))
+    
     # Draw enemies
     for enemy in enemies:
         enemy_screen_rect = world_to_screen_rect(enemy.rect)
-        if 0 <= enemy_screen_rect.x <= WIDTH and 0 <= enemy_screen_rect.y <= HEIGHT:  # Only draw if on screen
+        if 0 <= enemy_screen_rect.x <= WIDTH and 0 <= enemy_screen_rect.y <= HEIGHT:
             if enemy.type in enemy_frames and len(enemy_frames[enemy.type]) > 0:
                 frame = enemy_frames[enemy.type][enemy.frame_index % len(enemy_frames[enemy.type])]
                 screen.blit(frame, enemy_screen_rect)
@@ -1684,7 +1736,7 @@ def draw_dungeon(screen, assets, enemy_frames):
     # Draw exit portal
     if dungeon_exit:
         screen.blit(assets["portal"], (dungeon_exit.x - map_offset_x, dungeon_exit.y - map_offset_y))
-
+    
     # Update floating texts
     for text in floating_texts[:]:
         text.update()
@@ -1692,6 +1744,7 @@ def draw_dungeon(screen, assets, enemy_frames):
             floating_texts.remove(text)
         else:
             text.draw(screen, assets["small_font"], map_offset_x, map_offset_y)
+
 
 def get_shop_items(assets):
     """Returns the items available in the shop with their prices."""
@@ -1988,7 +2041,7 @@ def draw_tooltip_for_nearby_objects(screen, font):
                 tooltip_text = "Enter [e]"
                 tooltip_pos = (house_screen.x, house_screen.y)
 
-        # Mouse hover tooltips
+        # Mouse hover tooltips for other objects...
         if tooltip_text is None:
             # Flowers: show only on mouse hover
             for fx, fy, idx in flower_tiles:
@@ -2050,9 +2103,14 @@ def draw_tooltip_for_nearby_objects(screen, font):
             tooltip_pos = door_zone.topleft
     
     elif current_level == "dungeon":
-        # Inside dungeon: Exit portal tooltip if near
-        player_world_rect = get_player_world_rect()
-        if dungeon_exit and player_world_rect.colliderect(dungeon_exit.inflate(20, 20)):
+        # Inside dungeon: Boss door check (proximity-based, not mouse hover)
+        if boss1_portal and player_world_rect.colliderect(boss1_portal.inflate(30, 30)):
+            boss_screen = world_to_screen_rect(boss1_portal)
+            tooltip_text = "Boss Door [e]"
+            tooltip_pos = (boss_screen.x, boss_screen.y)
+        
+        # Exit portal tooltip if near
+        elif dungeon_exit and player_world_rect.colliderect(dungeon_exit.inflate(20, 20)):
             exit_screen = world_to_screen_rect(dungeon_exit)
             tooltip_text = "Exit Dungeon [e]"
             tooltip_pos = (exit_screen.x, exit_screen.y)
@@ -2338,35 +2396,33 @@ def handle_movement(keys):
         last_direction = current_direction
     return dx, dy
 
+
 def handle_collision(new_world_rect):
-    """Checks for collision with world objects."""
+    """Checks for collision with world objects depending on current level."""
     if current_level == "world":
-        # Collide with trees/houses
-        if any(new_world_rect.colliderect(r) for r in tree_rects):
-            return True
-        # Collide with stones
-        if any(new_world_rect.colliderect(r) for r in stone_rects):
+        if any(new_world_rect.colliderect(r) for r in tree_rects + stone_rects):
             return True
         return False
     elif current_level == "dungeon":
-        # Collide with dungeon walls
-        if any(new_world_rect.colliderect(r) for r in dungeon_walls):
+        if any(new_world_rect.colliderect(r) for r in dungeon_walls + stone_rects):
             return True
-        # Collide with ore deposits
-        if any(new_world_rect.colliderect(r) for r in stone_rects):
-            return True
-        # Don't collide with enemies for player movement - let them overlap
         return False
-    else:
-        # Indoor collisions
+    elif current_level == "boss_room":
+        # Allow free movement except for walls loaded from map
+        if any(new_world_rect.colliderect(r) for r in boss_room_walls):
+            return True
+        return False
+    else:  # house
         return any(new_world_rect.colliderect(r) for r in indoor_colliders)
 
+
 def check_house_entry(world_rect):
-    """Checks if the player's world rect is near a house door."""
+    """Checks if the player is near a house door in the world."""
     for i, h in enumerate(house_list):
         if world_rect.colliderect(h.inflate(20, 20)):
             return i
     return None
+
 
 def use_potion():
     """Uses a potion from inventory to heal the player."""
@@ -2380,13 +2436,99 @@ def use_potion():
         print("No potions available!")
         return False
 
+
 def setup_dungeon():
-    """Creates the dungeon layout with walls, ore deposits, and exit."""
-    spawn_point = setup_dungeon_from_map("dungeon1")  # Try to load from file first
-    return spawn_point
+    """Loads dungeon layout and returns spawn point."""
+    return setup_dungeon_from_map("dungeon1")
+
+
+def setup_boss_room():
+    """Loads boss room layout from file and returns spawn point."""
+    return setup_dungeon_from_map("bossroom1")  # works same way as dungeon
+def handle_main_menu_events(screen, assets, dt):
+    global game_state, menu_selected_option
+    for event in pygame.event.get():
+        if event.type == pygame.QUIT:
+            pygame.quit()
+            sys.exit()
+        elif event.type == pygame.KEYDOWN:
+            if event.key == pygame.K_w:
+                menu_selected_option = (menu_selected_option - 1) % 3
+            elif event.key == pygame.K_s:
+                menu_selected_option = (menu_selected_option + 1) % 3
+            elif event.key == pygame.K_RETURN:
+                if menu_selected_option == 0:  # New Game
+                    start_new_game()
+                    game_state = "playing"
+                elif menu_selected_option == 1:  # Load Game
+                    game_state = "save_select"
+                elif menu_selected_option == 2:  # Exit
+                    pygame.quit()
+                    sys.exit()
+    draw_main_menu(screen, assets)
+    pygame.display.flip()
+
+
+def handle_save_select_events(screen, assets, dt):
+    global game_state, selected_save_slot
+    for event in pygame.event.get():
+        if event.type == pygame.QUIT:
+            pygame.quit()
+            sys.exit()
+        elif event.type == pygame.KEYDOWN:
+            if event.key == pygame.K_UP:
+                selected_save_slot = max(1, selected_save_slot - 1)
+            elif event.key == pygame.K_DOWN:
+                selected_save_slot = min(4, selected_save_slot + 1)
+            elif event.key == pygame.K_RETURN:
+                if load_game_data(selected_save_slot):
+                    game_state = "playing"
+                    setup_colliders()
+                else:
+                    start_new_game()
+                    game_state = "playing"
+            elif event.key == pygame.K_ESCAPE:
+                game_state = "main_menu"
+    draw_save_select_menu(screen, assets)
+    pygame.display.flip()
 
 def main():
-    """Main game loop."""
+    """Main game state manager."""
+    global game_state, menu_selected_option, selected_save_slot
+    screen, clock = init()
+    assets = load_assets()
+    load_save_slots()
+
+    while True:
+        dt = clock.tick(60)
+        if game_state == "main_menu":
+            handle_main_menu_events(screen, assets, dt)
+        elif game_state == "save_select":
+            handle_save_select_events(screen, assets, dt)
+        elif game_state == "playing":
+            handle_playing_state(screen, assets, dt)
+        elif game_state == "boss_room":
+            handle_boss_room_state(screen, assets, dt)
+def handle_boss_door(player_world_rect, assets):
+    """Checks for boss door interaction inside dungeon."""
+    global current_level
+
+    if boss_door and player_world_rect.colliderect(boss_door.inflate(20, 20)):
+        # Show tooltip
+        font = assets["small_font"]
+        text = font.render("Press E to enter Boss Room", True, (255, 255, 255))
+        screen = pygame.display.get_surface()
+        screen.blit(text, (boss_door.x, boss_door.y - 30))
+
+        keys = pygame.key.get_pressed()
+        if keys[pygame.K_e]:
+            # Switch to boss room
+            spawn_point = setup_boss_room()
+            player_pos.center = spawn_point
+            current_level = "boss_room"
+            print("Entered the Boss Room!")
+def handle_playing_state(screen, assets, dt):
+    """Handle the main game when actually playing."""
     global map_offset_x, map_offset_y, current_level, current_house_index
     global player_frame_index, player_frame_timer, current_direction, last_direction
     global show_inventory, show_crafting, show_equipment, crafting_tab
@@ -2403,192 +2545,179 @@ def main():
     global show_vendor_gui, vendor_tab
     global enemies
     global equipment_slots
-
-    # Initialize
-    screen, clock = init()
-    assets = load_assets()
-    player_frames = load_player_frames()
-    chopping_frames = load_chopping_frames()
-    attack_frames = load_attack_frames()
-    enemy_frames = load_enemy_frames()
-    setup_colliders()
-    give_starting_items(assets)
-    load_map("forest")
     
-    # Attack animation variables (local to main)
+    # Load frames if not already loaded
+    if not hasattr(handle_playing_state, 'frames_loaded'):
+        handle_playing_state.player_frames = load_player_frames()
+        handle_playing_state.chopping_frames = load_chopping_frames()
+        handle_playing_state.attack_frames = load_attack_frames()
+        handle_playing_state.enemy_frames = load_enemy_frames()
+        handle_playing_state.frames_loaded = True
+        
+        # Initialize world if first time
+        setup_colliders()
+        give_starting_items(assets)
+        load_map("forest")
+    
+    # Get frames
+    player_frames = handle_playing_state.player_frames
+    chopping_frames = handle_playing_state.chopping_frames
+    attack_frames = handle_playing_state.attack_frames
+    enemy_frames = handle_playing_state.enemy_frames
+    
+    # Attack animation variables
     attack_animation_duration = 600  # ms for attack animation
+    current_time = pygame.time.get_ticks()
 
-    while True:
-        dt = clock.tick(60)
-        current_time = pygame.time.get_ticks()
+    # Update player
+    player.update(dt, current_time)
+    
+    # Update level up notification timer
+    if show_level_up:
+        level_up_timer += dt
+        if level_up_timer > 3000:  # Show for 3 seconds
+            show_level_up = False
+            level_up_timer = 0
 
-        # Update player
-        player.update(dt, current_time)
-        
-        # Update level up notification timer
-        if show_level_up:
-            level_up_timer += dt
-            if level_up_timer > 3000:  # Show for 3 seconds
-                show_level_up = False
-                level_up_timer = 0
+    # UI Hover State
+    is_hovering = None
+    mouse_pos = pygame.mouse.get_pos()
+    if show_crafting:
+        if crafting_tab == "smithing":
+            if axe_button_rect and axe_button_rect.collidepoint(mouse_pos):
+                is_hovering = "axe"
+            elif pickaxe_button_rect and pickaxe_button_rect.collidepoint(mouse_pos):
+                is_hovering = "pickaxe"
+        elif crafting_tab == "alchemy":
+            if potion_button_rect and potion_button_rect.collidepoint(mouse_pos):
+                is_hovering = "potion"
 
-        # UI Hover State
-        is_hovering = None
-        mouse_pos = pygame.mouse.get_pos()
-        if show_crafting:
-            if crafting_tab == "smithing":
-                if axe_button_rect and axe_button_rect.collidepoint(mouse_pos):
-                    is_hovering = "axe"
-                elif pickaxe_button_rect and pickaxe_button_rect.collidepoint(mouse_pos):
-                    is_hovering = "pickaxe"
-            elif crafting_tab == "alchemy":
-                if potion_button_rect and potion_button_rect.collidepoint(mouse_pos):
-                    is_hovering = "potion"
-
-        # Enemy spawning and updates in dungeon
-        if current_level == "dungeon":
-            # Spawn enemies more aggressively at start
-            if len(enemies) < 3:  # Always try to maintain at least 3 enemies
-                if random.random() < 0.1:  # 10% chance per frame
-                    spawn_enemy_in_dungeon()
-            elif random.random() < ENEMY_SPAWN_RATE:
+    # Enemy spawning and updates in dungeon
+    if current_level == "dungeon":
+        # Spawn enemies more aggressively at start
+        if len(enemies) < 3:  # Always try to maintain at least 3 enemies
+            if random.random() < 0.1:  # 10% chance per frame
                 spawn_enemy_in_dungeon()
-            
-            # Update enemies
-            player_world_rect = get_player_world_rect()
-            obstacles = dungeon_walls + stone_rects
-            for enemy in enemies:
-                enemy.update(dt, current_time, player_world_rect, obstacles)
-            
-            # Handle combat
-            handle_combat(current_time)
-
-        # Event Handling
-        for event in pygame.event.get():
-            if event.type == pygame.QUIT:
-                pygame.quit()
-                sys.exit()
-            
-            if event.type == pygame.KEYDOWN:
-                # Combat controls - changed to key "1" (works everywhere now)
-                if event.key == pygame.K_1:
-                    if player.can_attack(current_time):
-                        # Start attack animation
-                        is_attacking = True
-                        attack_timer = 0
+        elif random.random() < ENEMY_SPAWN_RATE:
+            spawn_enemy_in_dungeon()
         
-                        # Find nearest enemy to attack
-                        player_world_rect = get_player_world_rect()
-                        target_enemy = find_nearest_enemy(player_world_rect)
-                        if target_enemy:
-                            # Attack the enemy
-                            equipped_weapon = equipment_slots.get("weapon")
-                            player_damage = player.get_total_damage(equipped_weapon)
-                            if target_enemy.take_damage(player_damage):
-                                player.gain_experience(target_enemy.experience_reward)
-                                enemies.remove(target_enemy)
-                                print(f"Defeated {target_enemy.type}! Gained {target_enemy.experience_reward} XP")
+        # Update enemies
+        player_world_rect = get_player_world_rect()
+        obstacles = dungeon_walls + stone_rects
+        for enemy in enemies:
+            enemy.update(dt, current_time, player_world_rect, obstacles)
+        
+        # Handle combat
+        handle_combat(current_time)
+
+    # Event Handling
+    for event in pygame.event.get():
+        if event.type == pygame.QUIT:
+            pygame.quit()
+            sys.exit()
+        
+        if event.type == pygame.KEYDOWN:
+            # Combat controls - changed to key "1" (works everywhere now)
+            if event.key == pygame.K_1:
+                if player.can_attack(current_time):
+                    # Start attack animation
+                    is_attacking = True
+                    attack_timer = 0
+    
+                    # Find nearest enemy to attack
+                    player_world_rect = get_player_world_rect()
+                    target_enemy = find_nearest_enemy(player_world_rect)
+                    if target_enemy:
+                        # Attack the enemy
+                        equipped_weapon = equipment_slots.get("weapon")
+                        player_damage = player.get_total_damage(equipped_weapon)
+                        if target_enemy.take_damage(player_damage):
+                            player.gain_experience(target_enemy.experience_reward)
+                            enemies.remove(target_enemy)
+                            print(f"Defeated {target_enemy.type}! Gained {target_enemy.experience_reward} XP")
+        
+                        player.last_attack_time = current_time
+                        print(f"Player attacks for {player_damage} damage!")
+                    else:
+                        # Still play attack animation even if no target
+                        player.last_attack_time = current_time
+                        print("Attack!")
             
-                            player.last_attack_time = current_time
-                            print(f"Player attacks for {player_damage} damage!")
+            # Use potion
+            if event.key == pygame.K_h:
+                use_potion()
+            
+            # Toggle UI panels
+            if event.key == pygame.K_i:
+                show_inventory = not show_inventory
+                show_crafting = show_equipment = False
+            elif event.key == pygame.K_c and not (is_chopping or is_crafting):
+                show_crafting = not show_crafting
+                show_inventory = show_equipment = False
+            elif event.key == pygame.K_r and not (is_chopping or is_crafting):
+                show_equipment = not show_equipment
+                show_inventory = show_crafting = False
+
+            # Interact with World / Dungeon / House
+            player_world_rect = get_player_world_rect()
+
+            if event.key == pygame.K_e:
+                # ===================== WORLD =====================
+                if current_level == "world":
+                    # Priority 1: Enter Dungeon
+                    if dungeon_portal and player_world_rect.colliderect(dungeon_portal.inflate(20, 20)):
+                        current_level = "dungeon"
+
+                        # Set up dungeon and get spawn point
+                        spawn_point = setup_dungeon()
+                        player_pos.center = spawn_point
+
+                        # Camera follows player
+                        map_offset_x = spawn_point[0] - WIDTH // 2
+                        map_offset_y = spawn_point[1] - HEIGHT // 2
+
+                        # Reset enemies
+                        enemies.clear()
+                        for _ in range(3):
+                            spawn_enemy_in_dungeon()
+
+                    # Priority 2: Enter House
+                    elif check_house_entry(player_world_rect) is not None:
+                        house_index = check_house_entry(player_world_rect)
+                        current_level = "house"
+                        current_house_index = house_index
+                        player_pos.size = (PLAYER_SIZE_INDOOR, PLAYER_SIZE_INDOOR)
+                        player_pos.center = (WIDTH // 2, HEIGHT // 2)
+                        setup_indoor_colliders()
+
+                    # Priority 3: Talk to Soldier NPC
+                    elif npc_rect and player_world_rect.colliderect(npc_rect.inflate(20, 20)):
+                        show_npc_dialog = True
+
+                    # Priority 4: Talk to Miner NPC
+                    elif miner_npc_rect and player_world_rect.colliderect(miner_npc_rect.inflate(20, 20)):
+                        show_miner_dialog = True
+
+                    # Priority 5: Chop Trees / Mine Stones / Pick Flowers
+                    elif equipment_slots["weapon"] and equipment_slots["weapon"].name == "Axe":
+                        for tree in list(tree_rects):
+                            if (player_world_rect.colliderect(tree.inflate(20, 20)) and 
+                                tree not in house_list and tree != dungeon_portal):
+                                is_chopping = True
+                                chopping_target_tree = tree
+                                chopping_timer = 0
+                                current_direction = "idle"
+                                break
                         else:
-                            # Still play attack animation even if no target
-                            player.last_attack_time = current_time
-                            print("Attack!")
-                
-                # Use potion
-                if event.key == pygame.K_h:
-                    use_potion()
-                
-                # Toggle UI panels
-                if event.key == pygame.K_i:
-                    show_inventory = not show_inventory
-                    show_crafting = show_equipment = False
-                elif event.key == pygame.K_c and not (is_chopping or is_crafting):
-                    show_crafting = not show_crafting
-                    show_inventory = show_equipment = False
-                elif event.key == pygame.K_r and not (is_chopping or is_crafting):
-                    show_equipment = not show_equipment
-                    show_inventory = show_crafting = False
-
-                # Interact with World
-                player_world_rect = get_player_world_rect()
-                if event.key == pygame.K_e:
-                    if current_level == "world":
-                        if dungeon_portal and player_world_rect.colliderect(dungeon_portal.inflate(20, 20)):
-                            current_level = "dungeon"
-            
-                            # Set up dungeon and get spawn point
-                            spawn_point = setup_dungeon()
-            
-                            # Position player at spawn point
-                            player_pos.center = spawn_point
-            
-                            # Camera follows the player - FIXED the bug here
-                            map_offset_x = spawn_point[0] - WIDTH // 2
-                            map_offset_y = spawn_point[1] - HEIGHT // 2  # Fixed: was WIDTH // 2
-            
-                            # Reset enemies
-                            enemies.clear()
-                            for _ in range(3):
-                                spawn_enemy_in_dungeon()
-
-                        # Priority 2: Enter House
-                        elif check_house_entry(player_world_rect) is not None:
-                            house_index = check_house_entry(player_world_rect)
-                            current_level = "house"
-                            current_house_index = house_index
-                            player_pos.size = (PLAYER_SIZE_INDOOR, PLAYER_SIZE_INDOOR)
-                            player_pos.center = (WIDTH // 2, HEIGHT // 2)
-                            setup_indoor_colliders()
-                            
-                        # Priority 3: Talk to NPCs
-                        elif npc_rect and player_world_rect.colliderect(npc_rect.inflate(20, 20)):
-                            show_npc_dialog = True
-                        elif miner_npc_rect and player_world_rect.colliderect(miner_npc_rect.inflate(20, 20)):
-                            show_miner_dialog = True
-                            
-                        # Priority 4: Chop Trees
-                        elif equipment_slots["weapon"] and equipment_slots["weapon"].name == "Axe":
-                            for tree in list(tree_rects):
-                                if (player_world_rect.colliderect(tree.inflate(20, 20)) and 
-                                    tree not in house_list and tree != dungeon_portal):
-                                    is_chopping = True
-                                    chopping_target_tree = tree
-                                    chopping_timer = 0
-                                    current_direction = "idle"
-                                    break
+                            if equipment_slots["weapon"].name == "Pickaxe":
+                                for stone in list(stone_rects):
+                                    if player_world_rect.colliderect(stone.inflate(20, 20)):
+                                        is_mining = True
+                                        mining_target_stone = stone
+                                        mining_timer = 0
+                                        current_direction = "idle"
+                                        break
                             else:
-                                # Priority 5: Mine Stones
-                                if equipment_slots["weapon"] and equipment_slots["weapon"].name == "Pickaxe":
-                                    for stone in list(stone_rects):
-                                        if player_world_rect.colliderect(stone.inflate(20, 20)):
-                                            is_mining = True
-                                            mining_target_stone = stone
-                                            mining_timer = 0
-                                            current_direction = "idle"
-                                            break
-                                else:
-                                    # Priority 6: Pick Flowers
-                                    for fx, fy, idx in list(flower_tiles):
-                                        flower_rect = pygame.Rect(fx, fy, 30, 30)
-                                        if player_world_rect.colliderect(flower_rect.inflate(10, 10)):
-                                            add_item_to_inventory(assets["flower_item"])
-                                            flower_tiles.remove((fx, fy, idx))
-                                            print("Picked a flower!")
-                                            break
-                                    else:
-                                        print("You need an Axe to chop trees or a Pickaxe to mine stone!")
-                        elif equipment_slots["weapon"] and equipment_slots["weapon"].name == "Pickaxe":
-                            for stone in list(stone_rects):
-                                if player_world_rect.colliderect(stone.inflate(20, 20)):
-                                    is_mining = True
-                                    mining_target_stone = stone
-                                    mining_timer = 0
-                                    current_direction = "idle"
-                                    break
-                            else:
-                                # Pick Flowers
                                 for fx, fy, idx in list(flower_tiles):
                                     flower_rect = pygame.Rect(fx, fy, 30, 30)
                                     if player_world_rect.colliderect(flower_rect.inflate(10, 10)):
@@ -2596,8 +2725,15 @@ def main():
                                         flower_tiles.remove((fx, fy, idx))
                                         print("Picked a flower!")
                                         break
+                    elif equipment_slots["weapon"] and equipment_slots["weapon"].name == "Pickaxe":
+                        for stone in list(stone_rects):
+                            if player_world_rect.colliderect(stone.inflate(20, 20)):
+                                is_mining = True
+                                mining_target_stone = stone
+                                mining_timer = 0
+                                current_direction = "idle"
+                                break
                         else:
-                            # Pick Flowers without tools
                             for fx, fy, idx in list(flower_tiles):
                                 flower_rect = pygame.Rect(fx, fy, 30, 30)
                                 if player_world_rect.colliderect(flower_rect.inflate(10, 10)):
@@ -2605,432 +2741,455 @@ def main():
                                     flower_tiles.remove((fx, fy, idx))
                                     print("Picked a flower!")
                                     break
-                    
-                    elif current_level == "dungeon":
-                        # Inside dungeon: Mine ore or exit
-                        if dungeon_exit and player_world_rect.colliderect(dungeon_exit.inflate(20, 20)):
-                            # Exit dungeon back to world
-                            current_level = "world"
-                            portal_x = 25 * TILE_SIZE
-                            portal_y = 38 * TILE_SIZE
-                            map_offset_x = portal_x - WIDTH // 2
-                            map_offset_y = portal_y - HEIGHT // 2 + 100
-                            player_pos.center = (portal_x, portal_y)
+                    else:
+                        for fx, fy, idx in list(flower_tiles):
+                            flower_rect = pygame.Rect(fx, fy, 30, 30)
+                            if player_world_rect.colliderect(flower_rect.inflate(10, 10)):
+                                add_item_to_inventory(assets["flower_item"])
+                                flower_tiles.remove((fx, fy, idx))
+                                print("Picked a flower!")
+                                break
 
-                            enemies.clear()  # Clear enemies when exiting dungeon
-                        elif equipment_slots["weapon"] and equipment_slots["weapon"].name == "Pickaxe":
-                            for stone in list(stone_rects):
-                                if player_world_rect.colliderect(stone.inflate(20, 20)):
-                                    is_mining = True
-                                    mining_target_stone = stone
-                                    mining_timer = 0
-                                    current_direction = "idle"
-                                    break
-                        else:
-                            print("You need a Pickaxe to mine ore!")
-                            
-                    else:  # current_level == "house"
-                        # Inside house -> Exit
-                        door_zone = pygame.Rect(WIDTH // 2 - 40, HEIGHT - 100, 80, 80)
-                        if door_zone.colliderect(player_pos.inflate(50, 50)):
-                            current_level = "world"
-                            player_pos.size = (PLAYER_SIZE, PLAYER_SIZE)
-                            exit_rect = house_list[current_house_index]
-                            player_world_x = exit_rect.centerx - 20
-                            player_world_y = exit_rect.bottom + 20
-                            map_offset_x = player_world_x - WIDTH // 2
-                            map_offset_y = player_world_y - HEIGHT // 2
-                            player_pos.center = (WIDTH // 2, HEIGHT // 2)
-                            current_house_index = None
+                # ===================== DUNGEON =====================
+                elif current_level == "dungeon":
+                    # Exit back to world
+                    if dungeon_exit and player_world_rect.colliderect(dungeon_exit.inflate(20, 20)):
+                        current_level = "world"
+                        portal_x = 25 * TILE_SIZE
+                        portal_y = 38 * TILE_SIZE
+                        map_offset_x = portal_x - WIDTH // 2
+                        map_offset_y = portal_y - HEIGHT // 2 + 100
+                        player_pos.center = (portal_x, portal_y)
+                        enemies.clear()
 
-                # NPC Dialog controls
-                if event.key == pygame.K_SPACE and show_npc_dialog:
-                    if not npc_quest_active and not npc_quest_completed:
-                        # Accept quest
-                        npc_quest_active = True
-                        show_npc_dialog = False
-                        print("Quest accepted! Bring 3 potions to Soldier Marcus.")
-                    elif npc_quest_active and get_item_count("Potion") >= potions_needed:
-                        # Complete quest
-                        remove_item_from_inventory("Potion", potions_needed)
-                        for _ in range(10):
-                            add_item_to_inventory(assets["coin_item"])
-                        npc_quest_completed = True
-                        npc_quest_active = False
-                        show_npc_dialog = False
-                        print("Quest completed! You received 10 coins as a reward!")
-                    elif npc_quest_completed:
-                        # Open vendor shop
-                        show_npc_dialog = False
-                        show_vendor_gui = True
-                        vendor_tab = "buy"
-                
-                # Miner Dialog controls
-                if event.key == pygame.K_SPACE and show_miner_dialog:
-                    if not miner_quest_active and not miner_quest_completed:
-                        # Accept miner quest
-                        miner_quest_active = True
-                        show_miner_dialog = False
-                        print("Quest accepted! Gather 10 ore from the dungeon for Miner Gareth.")
-                    elif miner_quest_active and get_item_count("Ore") >= ore_needed:
-                        # Complete miner quest
-                        remove_item_from_inventory("Ore", ore_needed)
-                        for _ in range(15):
-                            add_item_to_inventory(assets["coin_item"])
-                        miner_quest_completed = True
-                        miner_quest_active = False
-                        show_miner_dialog = False
-                        print("Quest completed! You received 15 coins as a reward!")
-                
-                elif event.key == pygame.K_ESCAPE and (show_npc_dialog or show_miner_dialog):
+                    # Enter Boss Room
+                    elif boss_door_rect and player_world_rect.colliderect(boss_door_rect.inflate(20, 20)):
+                        current_level = "boss_room"
+
+                        # Load boss room map
+                        load_map_from_file("bossroom1.txt")
+
+                        # Place player inside boss room
+                        player_pos.center = (WIDTH // 2, HEIGHT - 100)
+
+                        # Reset camera
+                        map_offset_x = 0
+                        map_offset_y = 0
+
+                        enemies.clear()
+                        print("Entered Boss Room!")
+
+                        return  # <-- stop here so it doesn’t fall through to mining
+
+                    # Mine inside dungeon
+                    elif equipment_slots["weapon"] and equipment_slots["weapon"].name == "Pickaxe":
+                        for stone in list(stone_rects):
+                            if player_world_rect.colliderect(stone.inflate(20, 20)):
+                                is_mining = True
+                                mining_target_stone = stone
+                                mining_timer = 0
+                                current_direction = "idle"
+                                break
+                    else:
+                        print("You need a Pickaxe to mine ore!")
+
+
+                # ===================== HOUSE =====================
+                else:  # current_level == "house"
+                    door_zone = pygame.Rect(WIDTH // 2 - 40, HEIGHT - 100, 80, 80)
+                    if door_zone.colliderect(player_pos.inflate(50, 50)):
+                        current_level = "world"
+                        player_pos.size = (PLAYER_SIZE, PLAYER_SIZE)
+                        exit_rect = house_list[current_house_index]
+                        player_world_x = exit_rect.centerx - 20
+                        player_world_y = exit_rect.bottom + 20
+                        map_offset_x = player_world_x - WIDTH // 2
+                        map_offset_y = player_world_y - HEIGHT // 2
+                        player_pos.center = (WIDTH // 2, HEIGHT // 2)
+                        current_house_index = None
+
+            # ===================== NPC Dialog controls =====================
+            if event.key == pygame.K_SPACE and show_npc_dialog:
+                if not npc_quest_active and not npc_quest_completed:
+                    npc_quest_active = True
                     show_npc_dialog = False
+                    print("Quest accepted! Bring 3 potions to Soldier Marcus.")
+                elif npc_quest_active and get_item_count("Potion") >= potions_needed:
+                    remove_item_from_inventory("Potion", potions_needed)
+                    for _ in range(10):
+                        add_item_to_inventory(assets["coin_item"])
+                    npc_quest_completed = True
+                    npc_quest_active = False
+                    show_npc_dialog = False
+                    print("Quest completed! You received 10 coins as a reward!")
+                elif npc_quest_completed:
+                    show_npc_dialog = False
+                    show_vendor_gui = True
+                    vendor_tab = "buy"
+
+            if event.key == pygame.K_SPACE and show_miner_dialog:
+                if not miner_quest_active and not miner_quest_completed:
+                    miner_quest_active = True
                     show_miner_dialog = False
-                    
-                elif event.key == pygame.K_ESCAPE and show_vendor_gui:
-                    show_vendor_gui = False
+                    print("Quest accepted! Gather 10 ore from the dungeon for Miner Gareth.")
+                elif miner_quest_active and get_item_count("Ore") >= ore_needed:
+                    remove_item_from_inventory("Ore", ore_needed)
+                    for _ in range(15):
+                        add_item_to_inventory(assets["coin_item"])
+                    miner_quest_completed = True
+                    miner_quest_active = False
+                    show_miner_dialog = False
+                    print("Quest completed! You received 15 coins as a reward!")
 
-            if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
-                # Vendor GUI handling
-                if show_vendor_gui:
-                    # Tab switching
-                    if "buy_tab" in buy_button_rects and buy_button_rects["buy_tab"].collidepoint(event.pos):
-                        vendor_tab = "buy"
-                    elif "sell_tab" in buy_button_rects and buy_button_rects["sell_tab"].collidepoint(event.pos):
-                        vendor_tab = "sell"
-                    
-                    # Buy items
-                    elif vendor_tab == "buy":
-                        shop_items = get_shop_items(assets)
-                        coin_count = get_item_count("Coin")
-                        for item_name, button_rect in buy_button_rects.items():
-                            if item_name in ["buy_tab", "sell_tab"]:
-                                continue
-                            if button_rect.collidepoint(event.pos):
-                                item_data = shop_items[item_name]
-                                if coin_count >= item_data["buy_price"]:
-                                    # Buy the item
-                                    remove_item_from_inventory("Coin", item_data["buy_price"])
-                                    add_item_to_inventory(item_data["item"])
-                                    print(f"Bought {item_name} for {item_data['buy_price']} coins!")
-                                else:
-                                    print("Not enough coins!")
-                                break
-                    
-                    # Sell items
-                    elif vendor_tab == "sell":
-                        shop_items = get_shop_items(assets)
-                        for item_name, button_rect in sell_button_rects.items():
-                            if button_rect.collidepoint(event.pos):
-                                if get_item_count(item_name) > 0:
-                                    # Sell the item
-                                    remove_item_from_inventory(item_name, 1)
-                                    item_data = shop_items[item_name]
-                                    for _ in range(item_data["sell_price"]):
-                                        add_item_to_inventory(assets["coin_item"])
-                                    print(f"Sold {item_name} for {item_data['sell_price']} coins!")
-                                break
+            elif event.key == pygame.K_ESCAPE and (show_npc_dialog or show_miner_dialog):
+                show_npc_dialog = False
+                show_miner_dialog = False
+
+            elif event.key == pygame.K_ESCAPE and show_vendor_gui:
+                show_vendor_gui = False
+
+        # ===================== VENDOR/MISC CONTROLS =====================
+        if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+            # Vendor GUI handling
+            if show_vendor_gui:
+                # Tab switching
+                if "buy_tab" in buy_button_rects and buy_button_rects["buy_tab"].collidepoint(event.pos):
+                    vendor_tab = "buy"
+                elif "sell_tab" in buy_button_rects and buy_button_rects["sell_tab"].collidepoint(event.pos):
+                    vendor_tab = "sell"
                 
-                # Crafting GUI handling
-                elif show_crafting and not is_crafting:
-                    # Check tab clicks first
-                    if smithing_tab_rect and smithing_tab_rect.collidepoint(event.pos):
-                        crafting_tab = "smithing"
-                    elif alchemy_tab_rect and alchemy_tab_rect.collidepoint(event.pos):
-                        crafting_tab = "alchemy"
+                # Buy items
+                elif vendor_tab == "buy":
+                    shop_items = get_shop_items(assets)
+                    coin_count = get_item_count("Coin")
+                    for item_name, button_rect in buy_button_rects.items():
+                        if item_name in ["buy_tab", "sell_tab"]:
+                            continue
+                        if button_rect.collidepoint(event.pos):
+                            item_data = shop_items[item_name]
+                            if coin_count >= item_data["buy_price"]:
+                                # Buy the item
+                                remove_item_from_inventory("Coin", item_data["buy_price"])
+                                add_item_to_inventory(item_data["item"])
+                                print(f"Bought {item_name} for {item_data['buy_price']} coins!")
+                            else:
+                                print("Not enough coins!")
+                            break
+                
+                # Sell items
+                elif vendor_tab == "sell":
+                    shop_items = get_shop_items(assets)
+                    for item_name, button_rect in sell_button_rects.items():
+                        if button_rect.collidepoint(event.pos):
+                            if get_item_count(item_name) > 0:
+                                # Sell the item
+                                remove_item_from_inventory(item_name, 1)
+                                item_data = shop_items[item_name]
+                                for _ in range(item_data["sell_price"]):
+                                    add_item_to_inventory(assets["coin_item"])
+                                print(f"Sold {item_name} for {item_data['sell_price']} coins!")
+                            break
+            
+            # Crafting GUI handling
+            elif show_crafting and not is_crafting:
+                # Check tab clicks first
+                if smithing_tab_rect and smithing_tab_rect.collidepoint(event.pos):
+                    crafting_tab = "smithing"
+                elif alchemy_tab_rect and alchemy_tab_rect.collidepoint(event.pos):
+                    crafting_tab = "alchemy"
+                
+                # Then check crafting buttons based on active tab
+                elif crafting_tab == "smithing":
+                    if axe_button_rect and axe_button_rect.collidepoint(event.pos):
+                        if get_item_count("Log") >= 5:
+                            is_crafting = True
+                            crafting_timer = 0
+                            item_to_craft = assets["axe_item"]
+                            remove_item_from_inventory("Log", 5)
+                            print("Crafting an Axe...")
+                        else:
+                            print("Not enough logs!")
+                    elif pickaxe_button_rect and pickaxe_button_rect.collidepoint(event.pos):
+                        if get_item_count("Log") >= 10:
+                            is_crafting = True
+                            crafting_timer = 0
+                            item_to_craft = assets["pickaxe_item"]
+                            remove_item_from_inventory("Log", 10)
+                            print("Crafting a Pickaxe...")
+                        else:
+                            print("Not enough logs!")
+                
+                elif crafting_tab == "alchemy":
+                    if potion_button_rect and potion_button_rect.collidepoint(event.pos):
+                        if get_item_count("Flower") >= 3:
+                            is_crafting = True
+                            crafting_timer = 0
+                            item_to_craft = assets["potion_item"]
+                            remove_item_from_inventory("Flower", 3)
+                            print("Brewing a Potion...")
+                        else:
+                            print("Not enough flowers!")
+
+            # Equipment
+            if show_equipment:
+                weapon_slot_rect = pygame.Rect(EQUIPMENT_X + EQUIPMENT_GAP, EQUIPMENT_Y + 40 + EQUIPMENT_GAP,
+                                                EQUIPMENT_SLOT_SIZE, EQUIPMENT_SLOT_SIZE)
+                if weapon_slot_rect.collidepoint(event.pos):
+                    unequip_item()
                     
-                    # Then check crafting buttons based on active tab
-                    elif crafting_tab == "smithing":
-                        if axe_button_rect and axe_button_rect.collidepoint(event.pos):
-                            if get_item_count("Log") >= 5:
-                                is_crafting = True
-                                crafting_timer = 0
-                                item_to_craft = assets["axe_item"]
-                                remove_item_from_inventory("Log", 5)
-                                print("Crafting an Axe...")
-                            else:
-                                print("Not enough logs!")
-                        elif pickaxe_button_rect and pickaxe_button_rect.collidepoint(event.pos):
-                            if get_item_count("Log") >= 10:
-                                is_crafting = True
-                                crafting_timer = 0
-                                item_to_craft = assets["pickaxe_item"]
-                                remove_item_from_inventory("Log", 10)
-                                print("Crafting a Pickaxe...")
-                            else:
-                                print("Not enough logs!")
-                    
-                    elif crafting_tab == "alchemy":
-                        if potion_button_rect and potion_button_rect.collidepoint(event.pos):
-                            if get_item_count("Flower") >= 3:
-                                is_crafting = True
-                                crafting_timer = 0
-                                item_to_craft = assets["potion_item"]
-                                remove_item_from_inventory("Flower", 3)
-                                print("Brewing a Potion...")
-                            else:
-                                print("Not enough flowers!")
+            # Inventory
+            if show_inventory:
+                for row in range(4):
+                    for col in range(4):
+                        slot_x = INVENTORY_X + INVENTORY_GAP + col * (INVENTORY_SLOT_SIZE + INVENTORY_GAP)
+                        slot_y = INVENTORY_Y + 40 + INVENTORY_GAP + row * (INVENTORY_SLOT_SIZE + INVENTORY_GAP)
+                        slot_rect = pygame.Rect(slot_x, slot_y, INVENTORY_SLOT_SIZE, INVENTORY_SLOT_SIZE)
+                        if slot_rect.collidepoint(event.pos):
+                            try:
+                                item_to_equip = inventory[row][col]
+                                if item_to_equip and item_to_equip.category == "Weapon":
+                                    if equip_item(item_to_equip):
+                                        inventory[row][col] = None
+                                        break
+                            except Exception as e:
+                                print("Error equipping item:", e)
 
-                # Equipment
-                if show_equipment:
-                    weapon_slot_rect = pygame.Rect(EQUIPMENT_X + EQUIPMENT_GAP, EQUIPMENT_Y + 40 + EQUIPMENT_GAP,
-                                                    EQUIPMENT_SLOT_SIZE, EQUIPMENT_SLOT_SIZE)
-                    if weapon_slot_rect.collidepoint(event.pos):
-                        unequip_item()
-                        
-                # Inventory
-                if show_inventory:
-                    for row in range(4):
-                        for col in range(4):
-                            slot_x = INVENTORY_X + INVENTORY_GAP + col * (INVENTORY_SLOT_SIZE + INVENTORY_GAP)
-                            slot_y = INVENTORY_Y + 40 + INVENTORY_GAP + row * (INVENTORY_SLOT_SIZE + INVENTORY_GAP)
-                            slot_rect = pygame.Rect(slot_x, slot_y, INVENTORY_SLOT_SIZE, INVENTORY_SLOT_SIZE)
-                            if slot_rect.collidepoint(event.pos):
-                                try:
-                                    item_to_equip = inventory[row][col]
-                                    if item_to_equip and item_to_equip.category == "Weapon":
-                                        if equip_item(item_to_equip):
-                                            inventory[row][col] = None
-                                            break
-                                except Exception as e:
-                                    print("Error equipping item:", e)
+    # Game State Updates
+    # NPC idle animations
+    npc_idle_timer += dt
+    if npc_idle_timer >= 2000:
+        npc_idle_direction *= -1
+        npc_idle_timer = 0
+    
+    idle_progress = npc_idle_timer / 2000.0
+    npc_idle_offset_y = int(3 * math.sin(idle_progress * 3.14159) * npc_idle_direction)
+    
+    # Miner NPC idle animation
+    miner_idle_timer += dt
+    if miner_idle_timer >= 2200:
+        miner_idle_direction *= -1
+        miner_idle_timer = 0
+    
+    miner_idle_progress = miner_idle_timer / 2200.0
+    miner_idle_offset_y = int(4 * math.sin(miner_idle_progress * 3.14159) * miner_idle_direction)
+    
+    # Crafting
+    if is_crafting:
+        crafting_timer += dt
+        if crafting_timer >= CRAFTING_TIME_MS:
+            if add_item_to_inventory(item_to_craft):
+                print(f"Crafting complete! {item_to_craft.name} added to inventory.")
+            else:
+                print(f"Crafting failed: Inventory is full.")
+            is_crafting = False
+            item_to_craft = None
 
-        # Game State Updates
-        # NPC idle animations
-        npc_idle_timer += dt
-        if npc_idle_timer >= 2000:
-            npc_idle_direction *= -1
-            npc_idle_timer = 0
-        
-        idle_progress = npc_idle_timer / 2000.0
-        npc_idle_offset_y = int(3 * math.sin(idle_progress * 3.14159) * npc_idle_direction)
-        
-        # Miner NPC idle animation
-        miner_idle_timer += dt
-        if miner_idle_timer >= 2200:
-            miner_idle_direction *= -1
-            miner_idle_timer = 0
-        
-        miner_idle_progress = miner_idle_timer / 2200.0
-        miner_idle_offset_y = int(4 * math.sin(miner_idle_progress * 3.14159) * miner_idle_direction)
-        
-        # Crafting
-        if is_crafting:
-            crafting_timer += dt
-            if crafting_timer >= CRAFTING_TIME_MS:
-                if add_item_to_inventory(item_to_craft):
-                    print(f"Crafting complete! {item_to_craft.name} added to inventory.")
-                else:
-                    print(f"Crafting failed: Inventory is full.")
-                is_crafting = False
-                item_to_craft = None
+    # Attack animation - FIXED to prevent crashes
+    if is_attacking:
+        attack_timer += dt
+        player_frame_timer += dt
+        if player_frame_timer >= swing_delay:
+            # Safety check to prevent crashes
+            attack_direction = last_direction if last_direction in attack_frames else "down"
+            max_frames = len(attack_frames[attack_direction])
+            player_frame_index = (player_frame_index + 1) % max_frames
+            player_frame_timer = 0
 
-        # Attack animation - FIXED to prevent crashes
-        if is_attacking:
-            attack_timer += dt
-            player_frame_timer += dt
+        if attack_timer >= attack_animation_duration:
+            is_attacking = False
+            attack_timer = 0
+            player_frame_index = 0  # Reset frame
+            current_direction = "idle"
+
+    # Chopping animation - FIXED to prevent crashes
+    if is_chopping:
+        chopping_timer += dt
+        player_frame_timer += dt
+        if player_frame_timer > idle_chop_delay:
+            is_swinging = True
             if player_frame_timer >= swing_delay:
                 # Safety check to prevent crashes
-                attack_direction = last_direction if last_direction in attack_frames else "down"
-                max_frames = len(attack_frames[attack_direction])
+                chop_direction = last_direction if last_direction in chopping_frames else "down"
+                max_frames = len(chopping_frames[chop_direction])
                 player_frame_index = (player_frame_index + 1) % max_frames
                 player_frame_timer = 0
 
-            if attack_timer >= attack_animation_duration:
-                is_attacking = False
-                attack_timer = 0
-                player_frame_index = 0  # Reset frame
-                current_direction = "idle"
+        if chopping_timer >= CHOPPING_DURATION:
+            if chopping_target_tree in tree_rects:
+                tree_rects.remove(chopping_target_tree)
+                chopped_trees[(chopping_target_tree.x, chopping_target_tree.y, chopping_target_tree.width, chopping_target_tree.height)] = current_time
+                add_item_to_inventory(assets["log_item"])
+                print("Chopped a tree! Gained a log.")
+            is_chopping = False
+            is_swinging = False
+            chopping_timer = 0
+            chopping_target_tree = None
+            current_direction = "idle"
 
-        # Chopping animation - FIXED to prevent crashes
-        if is_chopping:
-            chopping_timer += dt
-            player_frame_timer += dt
-            if player_frame_timer > idle_chop_delay:
-                is_swinging = True
-                if player_frame_timer >= swing_delay:
-                    # Safety check to prevent crashes
-                    chop_direction = last_direction if last_direction in chopping_frames else "down"
-                    max_frames = len(chopping_frames[chop_direction])
-                    player_frame_index = (player_frame_index + 1) % max_frames
-                    player_frame_timer = 0
-
-            if chopping_timer >= CHOPPING_DURATION:
-                if chopping_target_tree in tree_rects:
-                    tree_rects.remove(chopping_target_tree)
-                    chopped_trees[(chopping_target_tree.x, chopping_target_tree.y, chopping_target_tree.width, chopping_target_tree.height)] = current_time
-                    add_item_to_inventory(assets["log_item"])
-                    print("Chopped a tree! Gained a log.")
-                is_chopping = False
-                is_swinging = False
-                chopping_timer = 0
-                chopping_target_tree = None
-                current_direction = "idle"
-
-        # Mining animation - FIXED to prevent crashes
-        if is_mining:
-            mining_timer += dt
-            player_frame_timer += dt
-            if player_frame_timer > idle_chop_delay:
-                is_swinging = True
-                if player_frame_timer >= swing_delay:
-                    # Safety check to prevent crashes
-                    chop_direction = last_direction if last_direction in chopping_frames else "down"
-                    max_frames = len(chopping_frames[chop_direction])
-                    player_frame_index = (player_frame_index + 1) % max_frames
-                    player_frame_timer = 0
-
-            if mining_timer >= MINING_DURATION:
-                if mining_target_stone in stone_rects:
-                    stone_rects.remove(mining_target_stone)
-                    chopped_stones[(mining_target_stone.x, mining_target_stone.y, mining_target_stone.width, mining_target_stone.height)] = current_time
-                    # Give ore if in dungeon, stone if in world
-                    if current_level == "dungeon":
-                        add_item_to_inventory(assets["ore_item"])
-                        print("Mined ore!")
-                    else:
-                        add_item_to_inventory(assets["stone_item"])
-                        print("Mined a stone!")
-                is_mining = False
-                is_swinging = False
-                mining_timer = 0
-                mining_target_stone = None
-                current_direction = "idle"
-       
-        # Respawn Logic
-        for tree_rect_tuple, time_chopped in list(chopped_trees.items()):
-            tree_rect = pygame.Rect(tree_rect_tuple)
-            if current_time - time_chopped > RESPAWN_TIME:
-                tree_rects.append(tree_rect)
-                del chopped_trees[tree_rect_tuple]
-
-        for stone_rect_tuple, time_mined in list(chopped_stones.items()):
-            stone_rect = pygame.Rect(stone_rect_tuple)
-            if current_time - time_mined > RESPAWN_TIME:
-                stone_rects.append(stone_rect)
-                del chopped_stones[stone_rect_tuple]
-
-
-        # Player Movement
-        if not (show_inventory or show_crafting or show_equipment or is_chopping or is_mining or is_attacking or show_npc_dialog or show_miner_dialog):
-            keys = pygame.key.get_pressed()
-            dx, dy = handle_movement(keys)
-    
-            if current_level == "world" or current_level == "dungeon":
-                new_player_world_rect = get_player_world_rect().move(dx, dy)
-                if not handle_collision(new_player_world_rect):
-                    map_offset_x += dx
-                    map_offset_y += dy
-                    # 👇 Add this
-                    if dx != 0 or dy != 0:
-                        last_direction = current_direction
-            else:  # current_level == "house"
-                new_player_pos = player_pos.move(dx, dy)
-                if not handle_collision(new_player_pos):
-                    player_pos = new_player_pos
-                    # 👇 Add this
-                    if dx != 0 or dy != 0:
-                        last_direction = current_direction
-
-        # Animation state update - FIXED to prevent crashes
-        if not is_chopping and not is_mining and not is_attacking:
-            player_frame_timer += dt
-            if current_direction == "idle":
-                player_frame_index = 0
-            elif player_frame_timer > player_frame_delay:
+    # Mining animation - FIXED to prevent crashes
+    if is_mining:
+        mining_timer += dt
+        player_frame_timer += dt
+        if player_frame_timer > idle_chop_delay:
+            is_swinging = True
+            if player_frame_timer >= swing_delay:
                 # Safety check to prevent crashes
-                frame_set = player_frames.get(current_direction, player_frames["idle"])
-                max_frames = len(frame_set)
+                chop_direction = last_direction if last_direction in chopping_frames else "down"
+                max_frames = len(chopping_frames[chop_direction])
                 player_frame_index = (player_frame_index + 1) % max_frames
                 player_frame_timer = 0
-                
-        # Drawing
-        screen.fill((0, 0, 0))
-        if current_level == "world":
-            draw_world(screen, assets)
-        elif current_level == "dungeon":
-            draw_dungeon(screen, assets, enemy_frames)
-        else:
-            screen.blit(assets["interiors"][current_house_index], (0, 0))
 
-        # Determine the current size of the player for drawing
-        player_size_current = player_pos.width
+        if mining_timer >= MINING_DURATION:
+            if mining_target_stone in stone_rects:
+                stone_rects.remove(mining_target_stone)
+                chopped_stones[(mining_target_stone.x, mining_target_stone.y, mining_target_stone.width, mining_target_stone.height)] = current_time
+                # Give ore if in dungeon, stone if in world
+                if current_level == "dungeon":
+                    add_item_to_inventory(assets["ore_item"])
+                    print("Mined ore!")
+                else:
+                    add_item_to_inventory(assets["stone_item"])
+                    print("Mined a stone!")
+            is_mining = False
+            is_swinging = False
+            mining_timer = 0
+            mining_target_stone = None
+            current_direction = "idle"
+   
+    # Respawn Logic
+    for tree_rect_tuple, time_chopped in list(chopped_trees.items()):
+        tree_rect = pygame.Rect(tree_rect_tuple)
+        if current_time - time_chopped > RESPAWN_TIME:
+            tree_rects.append(tree_rect)
+            del chopped_trees[tree_rect_tuple]
 
-        # Draw player with animations - COMPLETELY FIXED to prevent crashes
-        if is_attacking:
-            attack_direction = last_direction if last_direction in attack_frames else "down"
-            frame_index = min(player_frame_index, len(attack_frames[attack_direction]) - 1)
-            scaled_frame = pygame.transform.scale(attack_frames[attack_direction][frame_index], (player_size_current, player_size_current))
-            screen.blit(scaled_frame, player_pos)
-        elif is_chopping or is_mining:
-            chop_direction = last_direction if last_direction in chopping_frames else "down"
-            frame_index = min(player_frame_index, len(chopping_frames[chop_direction]) - 1)
-            scaled_frame = pygame.transform.scale(chopping_frames[chop_direction][frame_index], (player_size_current, player_size_current))
-            screen.blit(scaled_frame, player_pos)
-        else:
+    for stone_rect_tuple, time_mined in list(chopped_stones.items()):
+        stone_rect = pygame.Rect(stone_rect_tuple)
+        if current_time - time_mined > RESPAWN_TIME:
+            stone_rects.append(stone_rect)
+            del chopped_stones[stone_rect_tuple]
+
+    # Player Movement
+    if not (show_inventory or show_crafting or show_equipment or is_chopping or is_mining or is_attacking or show_npc_dialog or show_miner_dialog):
+        keys = pygame.key.get_pressed()
+        dx, dy = handle_movement(keys)
+
+        if current_level == "world" or current_level == "dungeon":
+            new_player_world_rect = get_player_world_rect().move(dx, dy)
+            if not handle_collision(new_player_world_rect):
+                map_offset_x += dx
+                map_offset_y += dy
+                # Add this
+                if dx != 0 or dy != 0:
+                    last_direction = current_direction
+        else:  # current_level == "house"
+            new_player_pos = player_pos.move(dx, dy)
+            if not handle_collision(new_player_pos):
+                player_pos = new_player_pos
+                # Add this
+                if dx != 0 or dy != 0:
+                    last_direction = current_direction
+
+    # Animation state update - FIXED to prevent crashes
+    if not is_chopping and not is_mining and not is_attacking:
+        player_frame_timer += dt
+        if current_direction == "idle":
+            player_frame_index = 0
+        elif player_frame_timer > player_frame_delay:
+            # Safety check to prevent crashes
             frame_set = player_frames.get(current_direction, player_frames["idle"])
-            frame_index = min(player_frame_index, len(frame_set) - 1)
-            scaled_frame = pygame.transform.scale(frame_set[frame_index], (player_size_current, player_size_current))
-            screen.blit(scaled_frame, player_pos)
-
-        # Draw UI elements
-        draw_player_stats(screen, assets, player_frames, attack_frames, chopping_frames)
-        draw_experience_bar(screen, assets)  # New XP bar at bottom
-        draw_hud(screen, assets)
-        draw_ability_bar(screen, assets)
-        draw_tooltip_for_nearby_objects(screen, assets["small_font"])
-
-        # Draw dialogs
-        draw_npc_dialog(screen, assets)
-        draw_miner_dialog(screen, assets)
-
-        # Draw UI panels
-        if show_inventory:
-            draw_inventory(screen, assets)
-        if show_crafting:
-            draw_crafting_panel(screen, assets, is_hovering)
-        if show_equipment:
-            draw_equipment_panel(screen, assets)
-        
-        # Draw vendor GUI
-        if show_vendor_gui:
-            draw_vendor_gui(screen, assets)
-        
-        # Draw level up notification (over everything else)
-        draw_level_up_notification(screen, assets)
-        
-        # Draw coordinates at bottom
-        draw_player_coordinates(screen, assets["small_font"])
-        
-        # Game over screen
-        if player.health <= 0:
-            game_over_text = assets["large_font"].render("GAME OVER", True, (255, 0, 0))
-            restart_text = assets["font"].render("Press R to restart or ESC to quit", True, (255, 255, 255))
-            screen.blit(game_over_text, game_over_text.get_rect(center=(WIDTH//2, HEIGHT//2 - 50)))
-            screen.blit(restart_text, restart_text.get_rect(center=(WIDTH//2, HEIGHT//2 + 50)))
+            max_frames = len(frame_set)
+            player_frame_index = (player_frame_index + 1) % max_frames
+            player_frame_timer = 0
             
-            # Handle restart
-            keys = pygame.key.get_pressed()
-            if keys[pygame.K_r]:
-                # Restart game
-                player.health = player.max_health
-                player.level = 1
-                player.experience = 0
-                player.experience_to_next = 100
-                current_level = "world"
-                map_offset_x = 0
-                map_offset_y = 0
-                player_pos.center = (WIDTH // 2, HEIGHT // 2)
-                enemies.clear()
-                # Reset inventory
-                inventory = [[None for _ in range(4)] for _ in range(4)]
-                equipment_slots = {"weapon": None}
-                give_starting_items(assets)
-                setup_colliders()
-            elif keys[pygame.K_ESCAPE]:
-                pygame.quit()
-                sys.exit()
+    # Drawing
+    screen.fill((0, 0, 0))
+    if current_level == "world":
+        draw_world(screen, assets)
+    elif current_level == "dungeon":
+        draw_dungeon(screen, assets, enemy_frames)
+    else:
+        screen.blit(assets["interiors"][current_house_index], (0, 0))
 
-        pygame.display.flip()
+    # Determine the current size of the player for drawing
+    player_size_current = player_pos.width
+
+    # Draw player with animations - COMPLETELY FIXED to prevent crashes
+    if is_attacking:
+        attack_direction = last_direction if last_direction in attack_frames else "down"
+        frame_index = min(player_frame_index, len(attack_frames[attack_direction]) - 1)
+        scaled_frame = pygame.transform.scale(attack_frames[attack_direction][frame_index], (player_size_current, player_size_current))
+        screen.blit(scaled_frame, player_pos)
+    elif is_chopping or is_mining:
+        chop_direction = last_direction if last_direction in chopping_frames else "down"
+        frame_index = min(player_frame_index, len(chopping_frames[chop_direction]) - 1)
+        scaled_frame = pygame.transform.scale(chopping_frames[chop_direction][frame_index], (player_size_current, player_size_current))
+        screen.blit(scaled_frame, player_pos)
+    else:
+        frame_set = player_frames.get(current_direction, player_frames["idle"])
+        frame_index = min(player_frame_index, len(frame_set) - 1)
+        scaled_frame = pygame.transform.scale(frame_set[frame_index], (player_size_current, player_size_current))
+        screen.blit(scaled_frame, player_pos)
+
+    # Draw UI elements
+    draw_player_stats(screen, assets, player_frames, attack_frames, chopping_frames)
+    draw_experience_bar(screen, assets)  # New XP bar at bottom
+    draw_hud(screen, assets)
+    draw_ability_bar(screen, assets)
+    draw_tooltip_for_nearby_objects(screen, assets["small_font"])
+
+    # Draw dialogs
+    draw_npc_dialog(screen, assets)
+    draw_miner_dialog(screen, assets)
+
+    # Draw UI panels
+    if show_inventory:
+        draw_inventory(screen, assets)
+    if show_crafting:
+        draw_crafting_panel(screen, assets, is_hovering)
+    if show_equipment:
+        draw_equipment_panel(screen, assets)
+    
+    # Draw vendor GUI
+    if show_vendor_gui:
+        draw_vendor_gui(screen, assets)
+    
+    # Draw level up notification (over everything else)
+    draw_level_up_notification(screen, assets)
+    
+    # Draw coordinates at bottom
+    draw_player_coordinates(screen, assets["small_font"])
+    
+    # Game over screen
+    if player.health <= 0:
+        game_over_text = assets["large_font"].render("GAME OVER", True, (255, 0, 0))
+        restart_text = assets["font"].render("Press R to restart or ESC to quit", True, (255, 255, 255))
+        screen.blit(game_over_text, game_over_text.get_rect(center=(WIDTH//2, HEIGHT//2 - 50)))
+        screen.blit(restart_text, restart_text.get_rect(center=(WIDTH//2, HEIGHT//2 + 50)))
+        
+        # Handle restart
+        keys = pygame.key.get_pressed()
+        if keys[pygame.K_r]:
+            # Restart game
+            player.health = player.max_health
+            player.level = 1
+            player.experience = 0
+            player.experience_to_next = 100
+            current_level = "world"
+            map_offset_x = 0
+            map_offset_y = 0
+            player_pos.center = (WIDTH // 2, HEIGHT // 2)
+            enemies.clear()
+            # Reset inventory
+            inventory = [[None for _ in range(4)] for _ in range(4)]
+            equipment_slots = {"weapon": None}
+            give_starting_items(assets)
+            setup_colliders()
+        elif keys[pygame.K_ESCAPE]:
+            pygame.quit()
+            sys.exit()
+
+    pygame.display.flip()
 
 if __name__ == '__main__':
     main()
