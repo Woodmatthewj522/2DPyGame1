@@ -473,6 +473,7 @@ dungeon_portal = None
 dungeon_walls = []
 dungeon_enemies = []
 dungeon_exit = None
+boss_room_walls = []
 enemies = []
 floating_texts = []
 boss_door_rect = None
@@ -594,7 +595,7 @@ def load_text_map(filename):
     
     return map_data
 
-def load_dungeon_map(filename):
+def load_dungeon_map(dungeon1):
     """Load a dungeon from a text file."""
     map_data = {
         'walls': [],
@@ -613,7 +614,7 @@ def load_dungeon_map(filename):
     }
     
     try:
-        with open(filename, 'r') as f:
+        with open(dungeon1, 'r') as f:
             lines = f.readlines()
             for row, line in enumerate(lines):
                 for col, char in enumerate(line.strip()):
