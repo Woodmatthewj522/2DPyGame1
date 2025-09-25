@@ -1,4 +1,9 @@
-﻿## -*- coding: utf-8 -*-
+﻿### boss room floor is black, kind of like that
+# respawn after  boss death is in dungeon
+
+
+
+## -*- coding: utf-8 -*-
 import os
 import random
 import sys
@@ -382,7 +387,419 @@ class Enemy:
                 elif axis == "y":
                     self.rect.y = old_rect.y
                 break
+class Boss(Enemy):
+    def __init__(self, x, y, boss_data=None):
+        # Call Enemy constructor with type "boss"
+        super().__init__(x, y, enemy_type="boss")
+        
+        # Load boss sprite
+        try:
+            self.image = pygame.image.load("boss1.png").convert_alpha()
+            self.image = pygame.transform.scale(self.image, (PLAYER_SIZE * 4, PLAYER_SIZE * 4))
+        except Exception as e:
+            print("Error loading boss1.png:", e)
+            self.image = pygame.Surface((PLAYER_SIZE * 4, PLAYER_SIZE * 4))
+            self.image.fill((200, 0, 0))  # Red boss
 
+        # Update rect size to match the larger sprite
+        self.rect = self.image.get_rect(topleft=(x, y))
+        self.hitbox = self.rect.inflate(-PLAYER_SIZE // 2, -PLAYER_SIZE // 2)
+
+        # Boss stats: can be set from boss_data or use defaults
+        if boss_data:
+            self.health = int(boss_data.get("health", 300))
+            self.max_health = self.health
+            self.damage = int(boss_data.get("damage", 40))
+            self.name = boss_data.get("name", "Boss")
+        else:
+            self.health = 300
+            self.max_health = 300
+            self.damage = 40
+            self.name = "Ancient Guardian"
+
+        # Boss-specific stats
+        self.experience_reward = 500  # More XP than regular enemies
+        self.speed = ENEMY_SPEED * 0.8  # Slightly slower than regular enemies
+        
+        # Special abilities
+        self.special_ability_cooldown = 5000  # ms
+        self.last_special_ability = 0
+        self.charge_cooldown = 8000  # ms
+        self.last_charge_attack = 0
+        self.is_charging = False
+        self.charge_timer = 0
+        self.charge_duration = 2000  # ms
+        self.charge_target = None
+        
+        # Boss phases based on health
+        self.phase = 1  # 1, 2, or 3
+        self.last_phase_change = 0
+        
+        # Enhanced aggro range for boss
+        self.aggro_range = ENEMY_AGGRO_RANGE * 2
+        self.attack_range = ENEMY_ATTACK_RANGE * 1.5
+        
+        # Boss movement patterns
+        self.movement_pattern = "chase"  # "chase", "circle", "charge", "retreat"
+        self.pattern_timer = 0
+        self.circle_angle = 0
+        self.retreat_timer = 0
+
+    def get_current_phase(self):
+        """Determine boss phase based on health percentage."""
+        health_percent = self.health / self.max_health
+        if health_percent > 0.66:
+            return 1
+        elif health_percent > 0.33:
+            return 2
+        else:
+            return 3
+
+    def change_phase(self, new_phase, current_time):
+        """Handle phase transitions with special effects."""
+        if new_phase != self.phase:
+            old_phase = self.phase
+            self.phase = new_phase
+            self.last_phase_change = current_time
+            
+            # Visual feedback for phase change
+            floating_texts.append(FloatingText(
+                f"Phase {self.phase}!",
+                (self.rect.centerx, self.rect.y - 50),
+                color=(255, 215, 0),  # Gold
+                lifetime=2000
+            ))
+            
+            # Phase-specific changes
+            if self.phase == 2:
+                self.speed = ENEMY_SPEED * 1.0  # Normal speed
+                self.special_ability_cooldown = 4000  # Faster specials
+                print(f"{self.name} enters Phase 2 - Enhanced Aggression!")
+                
+            elif self.phase == 3:
+                self.speed = ENEMY_SPEED * 1.2  # Faster
+                self.special_ability_cooldown = 3000  # Even faster specials
+                self.charge_cooldown = 6000  # More frequent charges
+                print(f"{self.name} enters Phase 3 - Enraged!")
+
+    def use_special_ability(self, current_time, player):
+        """Boss special attacks that vary by phase."""
+        if current_time - self.last_special_ability < self.special_ability_cooldown:
+            return False
+
+        distance_to_player = math.hypot(
+            player.rect.centerx - self.rect.centerx,
+            player.rect.centery - self.rect.centery
+        )
+
+        if distance_to_player > self.attack_range * 2:
+            return False  # Too far away
+
+        self.last_special_ability = current_time
+        
+        if self.phase == 1:
+            # Phase 1: Basic slam attack
+            self._slam_attack(player, current_time)
+            
+        elif self.phase == 2:
+            # Phase 2: AOE shockwave
+            self._shockwave_attack(player, current_time)
+            
+        elif self.phase == 3:
+            # Phase 3: Multi-hit combo
+            self._combo_attack(player, current_time)
+            
+        return True
+
+    def _slam_attack(self, player, current_time):
+        """Basic slam attack - high damage, single target."""
+        damage = int(self.damage * 1.5)
+        if player.take_damage(damage, current_time):
+            return
+            
+        floating_texts.append(FloatingText(
+            "Mighty Slam!",
+            (self.rect.centerx, self.rect.y - 30),
+            color=(255, 100, 0),
+            lifetime=1500
+        ))
+
+    def _shockwave_attack(self, player, current_time):
+        """AOE attack that hits if player is nearby."""
+        shockwave_range = self.attack_range * 1.5
+        distance = math.hypot(
+            player.rect.centerx - self.rect.centerx,
+            player.rect.centery - self.rect.centery
+        )
+        
+        if distance <= shockwave_range:
+            damage = int(self.damage * 1.2)
+            player.take_damage(damage, current_time)
+            
+        floating_texts.append(FloatingText(
+            "Shockwave!",
+            (self.rect.centerx, self.rect.y - 30),
+            color=(255, 150, 0),
+            lifetime=1500
+        ))
+
+    def _combo_attack(self, player, current_time):
+        """Phase 3 combo attack - multiple hits."""
+        base_damage = int(self.damage * 0.8)
+        
+        # First hit
+        if player.take_damage(base_damage, current_time):
+            return
+            
+        # Schedule second hit (simplified - in a full implementation you'd use a proper system)
+        player.take_damage(base_damage, current_time + 500)
+        
+        floating_texts.append(FloatingText(
+            "Fury Combo!",
+            (self.rect.centerx, self.rect.y - 30),
+            color=(255, 50, 50),
+            lifetime=2000
+        ))
+
+    def initiate_charge_attack(self, player_pos, current_time):
+        """Start a charge attack toward the player."""
+        if current_time - self.last_charge_attack < self.charge_cooldown:
+            return False
+            
+        if self.is_charging:
+            return False
+            
+        self.is_charging = True
+        self.charge_timer = 0
+        self.charge_target = (player_pos.centerx, player_pos.centery)
+        self.last_charge_attack = current_time
+        self.movement_pattern = "charge"
+        
+        floating_texts.append(FloatingText(
+            "Charging!",
+            (self.rect.centerx, self.rect.y - 40),
+            color=(255, 200, 0),
+            lifetime=1000
+        ))
+        
+        return True
+
+    def update_movement_pattern(self, dt, current_time, player_world_rect):
+        """Advanced movement patterns for the boss."""
+        self.pattern_timer += dt
+        
+        # Change patterns periodically or based on conditions
+        if self.pattern_timer > 5000:  # Change pattern every 5 seconds
+            patterns = ["chase", "circle"]
+            if self.phase >= 2:
+                patterns.append("retreat")
+            
+            self.movement_pattern = random.choice(patterns)
+            self.pattern_timer = 0
+            
+        # Handle charge attack opportunity
+        if (self.phase >= 2 and 
+            not self.is_charging and 
+            current_time - self.last_charge_attack > self.charge_cooldown and
+            random.random() < 0.002):  # Small chance each frame
+            
+            distance = math.hypot(
+                player_world_rect.centerx - self.rect.centerx,
+                player_world_rect.centery - self.rect.centery
+            )
+            
+            if 100 < distance < 300:  # Good charge distance
+                self.initiate_charge_attack(player_world_rect, current_time)
+
+    def update(self, dt, current_time, player_world_rect, obstacles):
+        """Enhanced boss update with phases and special behaviors."""
+        # Update phase based on health
+        current_phase = self.get_current_phase()
+        if current_phase != self.phase:
+            self.change_phase(current_phase, current_time)
+        
+        # Update movement patterns
+        self.update_movement_pattern(dt, current_time, player_world_rect)
+        
+        # Handle charge attack
+        if self.is_charging:
+            self.charge_timer += dt
+            if self.charge_timer >= self.charge_duration:
+                self.is_charging = False
+                self.movement_pattern = "chase"
+                
+        # Animate
+        self.frame_timer += dt
+        if self.frame_timer >= self.frame_delay:
+            self.frame_index = (self.frame_index + 1) % 4
+            self.frame_timer = 0
+
+        # Distance and direction to player
+        dx = player_world_rect.centerx - self.hitbox.centerx
+        dy = player_world_rect.centery - self.hitbox.centery
+        distance_to_player = math.hypot(dx, dy)
+
+        # Enhanced AI state logic
+        if distance_to_player <= self.aggro_range:
+            self.state = "chasing"
+            self.target = player_world_rect
+        elif distance_to_player > self.aggro_range * 1.5:
+            self.state = "idle"
+            self.target = None
+
+        # Movement based on pattern and state
+        old_rect = self.rect.copy()
+        
+        if self.state == "chasing" and self.target:
+            if self.is_charging:
+                # Charge movement - fast and direct
+                if self.charge_target:
+                    charge_dx = self.charge_target[0] - self.rect.centerx
+                    charge_dy = self.charge_target[1] - self.rect.centery
+                    charge_distance = math.hypot(charge_dx, charge_dy)
+                    
+                    if charge_distance > 10:  # Still moving toward target
+                        charge_dx /= charge_distance
+                        charge_dy /= charge_distance
+                        charge_speed = self.speed * 3  # Much faster during charge
+                        self.rect.x += charge_dx * charge_speed
+                        self._resolve_collisions(obstacles, axis="x", old_rect=old_rect)
+                        self.rect.y += charge_dy * charge_speed  
+                        self._resolve_collisions(obstacles, axis="y", old_rect=old_rect)
+                        
+            elif self.movement_pattern == "circle" and distance_to_player < 200:
+                # Circle around player
+                self.circle_angle += 0.05
+                circle_radius = 120
+                target_x = player_world_rect.centerx + math.cos(self.circle_angle) * circle_radius
+                target_y = player_world_rect.centery + math.sin(self.circle_angle) * circle_radius
+                
+                circle_dx = target_x - self.rect.centerx
+                circle_dy = target_y - self.rect.centery
+                circle_distance = math.hypot(circle_dx, circle_dy)
+                
+                if circle_distance > 10:
+                    circle_dx /= circle_distance
+                    circle_dy /= circle_distance
+                    self.rect.x += circle_dx * self.speed * 0.7
+                    self._resolve_collisions(obstacles, axis="x", old_rect=old_rect)
+                    self.rect.y += circle_dy * self.speed * 0.7
+                    self._resolve_collisions(obstacles, axis="y", old_rect=old_rect)
+                    
+            elif self.movement_pattern == "retreat" and distance_to_player < 100:
+                # Retreat to a better position
+                self.retreat_timer += dt
+                if self.retreat_timer < 2000:  # Retreat for 2 seconds
+                    retreat_dx = -dx / distance_to_player  # Move away from player
+                    retreat_dy = -dy / distance_to_player
+                    self.rect.x += retreat_dx * self.speed * 1.5
+                    self._resolve_collisions(obstacles, axis="x", old_rect=old_rect)
+                    self.rect.y += retreat_dy * self.speed * 1.5
+                    self._resolve_collisions(obstacles, axis="y", old_rect=old_rect)
+                else:
+                    self.retreat_timer = 0
+                    self.movement_pattern = "chase"
+                    
+            else:
+                # Standard chase behavior
+                if distance_to_player > self.attack_range * 0.8:
+                    dx /= distance_to_player
+                    dy /= distance_to_player
+                    self.rect.x += dx * self.speed
+                    self._resolve_collisions(obstacles, axis="x", old_rect=old_rect)
+                    self.rect.y += dy * self.speed
+                    self._resolve_collisions(obstacles, axis="y", old_rect=old_rect)
+
+        elif self.state == "idle":
+            # Idle movement - slower and more random
+            self.path_timer += dt
+            if self.path_timer >= 3000:  # Change direction every 3s (slower than regular enemies)
+                self.random_direction = random.choice([(1, 0), (-1, 0), (0, 1), (0, -1), (0, 0)])
+                self.path_timer = 0
+
+            dx, dy = self.random_direction
+            self.rect.x += dx * self.speed * 0.3  # Slower idle movement
+            self._resolve_collisions(obstacles, axis="x", old_rect=old_rect)
+            self.rect.y += dy * self.speed * 0.3
+            self._resolve_collisions(obstacles, axis="y", old_rect=old_rect)
+
+        # Sync hitbox with sprite
+        self.hitbox.center = self.rect.center
+        
+        # Try special abilities
+        if self.state == "chasing" and distance_to_player <= self.attack_range * 1.5:
+            self.use_special_ability(current_time, player)
+
+    def attack_player(self, player_world_rect, current_time):
+        """Enhanced boss attack with different behaviors per phase."""
+        attack_range_rect = self.hitbox.inflate(self.attack_range, self.attack_range)
+        
+        if not self.can_attack(current_time):
+            return False
+            
+        if not attack_range_rect.colliderect(player_world_rect):
+            return False
+            
+        self.last_attack_time = current_time
+        
+        # Different attack patterns based on phase
+        if self.phase == 1:
+            # Phase 1: Standard attacks
+            return True
+        elif self.phase == 2:
+            # Phase 2: Chance for double attack
+            if random.random() < 0.3:  # 30% chance
+                floating_texts.append(FloatingText(
+                    "Double Strike!",
+                    (self.rect.centerx, self.rect.y - 20),
+                    color=(255, 180, 0)
+                ))
+                return True  # This will be handled as a double attack in combat system
+        else:  # Phase 3
+            # Phase 3: Even more aggressive
+            if random.random() < 0.4:  # 40% chance for enhanced attack
+                floating_texts.append(FloatingText(
+                    "Berserker Strike!",
+                    (self.rect.centerx, self.rect.y - 20),
+                    color=(255, 80, 80)
+                ))
+        
+        return True
+
+    def take_damage(self, damage_amount):
+        """Override to add boss-specific damage feedback."""
+        old_health = self.health
+        result = super().take_damage(damage_amount)
+        
+        # Boss-specific damage feedback
+        if self.health > 0:
+            # Show percentage of health remaining
+            health_percent = int((self.health / self.max_health) * 100)
+            floating_texts.append(FloatingText(
+                f"{health_percent}%",
+                (self.rect.centerx + 30, self.rect.y - 10),
+                color=(255, 255, 100),
+                lifetime=800
+            ))
+            
+            # Special reactions to taking damage
+            if self.health < self.max_health * 0.5 and old_health >= self.max_health * 0.5:
+                floating_texts.append(FloatingText(
+                    "You will pay for that!",
+                    (self.rect.centerx, self.rect.y - 60),
+                    color=(255, 100, 100),
+                    lifetime=2000
+                ))
+        else:
+            # Boss death message
+            floating_texts.append(FloatingText(
+                "The Ancient Guardian falls!",
+                (self.rect.centerx, self.rect.y - 50),
+                color=(255, 215, 0),
+                lifetime=3000
+            ))
+        
+        return result
 # --- GAME STATE GLOBALS ---
 player_pos = pygame.Rect(WIDTH // 2, HEIGHT // 2, PLAYER_SIZE, PLAYER_SIZE)
 player = Player()
@@ -591,9 +1008,110 @@ def load_text_map(filename):
                             })
     except FileNotFoundError:
         print(f"Could not load map: {filename}")
-        return create_default_map_data()
+
     
     return map_data
+
+# Add this debug function and call it in your boss room drawing
+def debug_boss_rendering():
+    print("=== BOSS RENDERING DEBUG ===")
+    print(f"Current level: {current_level}")
+    print(f"Enemies count: {len(enemies)}")
+    print(f"Player pos: {player_pos}")
+    print(f"Camera offset: ({map_offset_x}, {map_offset_y})")
+    
+    for i, enemy in enumerate(enemies):
+        print(f"\nEnemy {i}:")
+        print(f"  Type: {type(enemy).__name__}")
+        print(f"  World rect: {enemy.rect}")
+        print(f"  Image size: {enemy.image.get_size()}")
+        print(f"  Image type: {type(enemy.image)}")
+        
+        # Calculate screen position
+        screen_x = enemy.rect.x - map_offset_x
+        screen_y = enemy.rect.y - map_offset_y
+        print(f"  Screen pos: ({screen_x}, {screen_y})")
+        print(f"  On screen: {-200 <= screen_x <= WIDTH + 200 and -200 <= screen_y <= HEIGHT + 200}")
+
+def draw_boss_room(screen, assets):
+    """Draw the boss room including floor, walls, ore, portals, and enemies."""
+    
+    # ... existing drawing code ...
+    
+    # Draw enemies using their actual sprites
+    for enemy in enemies:
+        enemy_screen_rect = world_to_screen_rect(enemy.rect)
+        if 0 <= enemy_screen_rect.x <= WIDTH and 0 <= enemy_screen_rect.y <= HEIGHT:
+            screen.blit(enemy.image, enemy_screen_rect)
+            
+            # Draw boss health bar at top of screen
+            if isinstance(enemy, Boss):
+                draw_boss_health_bar(screen, assets, enemy)
+            
+            # Draw regular enemy health bar if damaged
+            elif enemy.health < enemy.max_health:
+                bar_y = enemy_screen_rect.y - 15
+                draw_health_bar(screen, enemy_screen_rect.x, bar_y, enemy.health, enemy.max_health, enemy.rect.width, 8)
+
+    # ... rest of existing code ...
+def load_boss_room_map(boss_room):
+    data = {
+        "walls": [],
+        "ore_deposits": [],
+        "boss_portal": None,
+        "exit_point": None,
+        "spawn_point": (5 * TILE_SIZE, 5 * TILE_SIZE),
+        "boss_spawn": None  # Add this line
+    }
+    with open(boss_room, "r") as f:
+        lines = [line.rstrip("\n") for line in f]
+    for y, line in enumerate(lines):
+        for x, char in enumerate(line):
+            world_x = x * TILE_SIZE
+            world_y = y * TILE_SIZE
+            if char == "#":
+                data["walls"].append(pygame.Rect(world_x, world_y, TILE_SIZE, TILE_SIZE))
+            elif char == "O":
+                data["ore_deposits"].append(pygame.Rect(world_x, world_y, TILE_SIZE, TILE_SIZE))
+            elif char == "B":
+                data["boss_portal"] = pygame.Rect(world_x, world_y, TILE_SIZE * 2, TILE_SIZE * 2)
+            elif char == "P":
+                data["exit_point"] = pygame.Rect(world_x, world_y, TILE_SIZE, TILE_SIZE)
+            elif char == "S":
+                data["spawn_point"] = (world_x, world_y)
+            elif char == "b":  # Boss spawn marker
+                data["boss_spawn"] = (world_x, world_y)
+    return data
+def setup_boss_room(filename="boss_room.txt"):
+    global boss_room_walls, stone_rects, boss1_portal, dungeon_exit, enemies, boss_enemy
+
+    boss_room_walls.clear()
+    stone_rects.clear()
+    enemies.clear()
+    boss1_portal = None
+    dungeon_exit = None
+    boss_enemy = None
+
+    map_data = load_boss_room_map(filename)
+
+    boss_room_walls.extend(map_data["walls"])
+    stone_rects.extend(map_data["ore_deposits"])
+    boss1_portal = map_data["boss_portal"]
+    dungeon_exit = map_data["exit_point"]
+
+    # Spawn boss if marker exists
+    if map_data["boss_spawn"]:
+        spawn_x, spawn_y = map_data["boss_spawn"]
+        boss_enemy = Boss(spawn_x, spawn_y)
+        enemies.append(boss_enemy)
+        print("Boss created at:", spawn_x, spawn_y)
+        print("Enemies list:", enemies)
+
+    # Return player spawn point
+    spawn_x, spawn_y = map_data["spawn_point"]
+    return (spawn_x, spawn_y)
+
+
 
 def load_dungeon_map(dungeon1):
     """Load a dungeon from a text file."""
@@ -632,38 +1150,9 @@ def load_dungeon_map(dungeon1):
                         elif char == 'B':
                             map_data['boss_portal'] = pygame.Rect(x, y, 50, 50)
     except FileNotFoundError:
-        print(f"Could not load dungeon map: {filename}")
-        return create_default_dungeon_data()
+        print(f"Could not load dungeon map: boss")
     
     return map_data
-
-def create_default_dungeon_data():
-    """Create default dungeon if file loading fails."""
-    walls = []
-    ore_deposits = []
-    
-    # Create border walls
-    for row in range(DUNGEON_SIZE):
-        for col in range(DUNGEON_SIZE):
-            x = col * TILE_SIZE
-            y = row * TILE_SIZE
-            
-            if row == 0 or row == DUNGEON_SIZE-1 or col == 0 or col == DUNGEON_SIZE-1:
-                walls.append(pygame.Rect(x, y, TILE_SIZE, TILE_SIZE))
-    
-    # Add some ore deposits
-    for _ in range(15):
-        x = random.randint(2, DUNGEON_SIZE-3) * TILE_SIZE
-        y = random.randint(2, DUNGEON_SIZE-3) * TILE_SIZE
-        offset = (TILE_SIZE - (TILE_SIZE // 2)) // 2
-        ore_deposits.append(pygame.Rect(x + offset, y + offset, TILE_SIZE // 2, TILE_SIZE // 2))
-    
-    return {
-        'walls': walls,
-        'ore_deposits': ore_deposits,
-        'spawn_point': (5 * TILE_SIZE, 5 * TILE_SIZE),
-        'exit_point': pygame.Rect((DUNGEON_SIZE-5) * TILE_SIZE, (DUNGEON_SIZE-5) * TILE_SIZE, TILE_SIZE * 2, TILE_SIZE * 2)
-    }
 
 def apply_map_data(map_data):
     """Apply loaded map data to game globals."""
@@ -1072,8 +1561,6 @@ def load_assets():
             create_fallback_surface((WIDTH, HEIGHT), (139, 69, 19))
         ]
 
-    # --- Boss Room ---
-    boss_room_bg = try_load_image("boss_room.png", (WIDTH, HEIGHT), (50, 0, 100))
 
     # --- Items as objects ---
     log_item = Item("Log", log_image)
@@ -1133,7 +1620,6 @@ def load_assets():
 
         # Boss
         "boss_door_frames": boss_door_frames,
-        "boss_room_bg": boss_room_bg,
     }
 
     return assets
@@ -1370,75 +1856,166 @@ def spawn_enemy_in_dungeon():
     print("Could not find safe spawn position for enemy")
 
 def handle_combat(current_time):
-    """Handles combat between player and enemies (enemy attacks only)."""
+    """Enhanced combat system that handles boss fights and regular enemies."""
     global current_level, map_offset_x, map_offset_y, player_pos
     
     player_world_rect = get_player_world_rect()
     player.rect = player_world_rect
 
     # Enemies attacking player
+    for enemy in enemies[:]:  # Create a copy to avoid modification during iteration
+        if isinstance(enemy, Boss):
+            # Special boss attack handling
+            if enemy.attack_player(player_world_rect, current_time):
+                # Boss attacks can have different damage multipliers based on phase
+                base_damage = enemy.damage
+                
+                # Phase-based damage scaling
+                if enemy.phase == 2:
+                    if "Double Strike" in [text.text for text in floating_texts]:
+                        base_damage = int(base_damage * 1.5)  # Double strike bonus
+                elif enemy.phase == 3:
+                    if "Berserker Strike" in [text.text for text in floating_texts]:
+                        base_damage = int(base_damage * 1.8)  # Berserker bonus
+                
+                # Apply damage
+                if player.take_damage(base_damage, current_time):
+                    handle_player_death()
+                    return
+        else:
+            # Regular enemy attack
+            if enemy.attack_player(player_world_rect, current_time):
+                if player.take_damage(enemy.damage, current_time):
+                    handle_player_death()
+                    return
+
+def handle_player_death():
+    """Handle what happens when player dies."""
+    global current_level, map_offset_x, map_offset_y, player_pos
+    
+    print("You died!")
+    if current_level == "dungeon":
+        # Respawn outside dungeon at the portal
+        current_level = "world"
+        
+        # Set proper world coordinates for dungeon portal
+        spawn_world_x = 25 * TILE_SIZE
+        spawn_world_y = 38 * TILE_SIZE
+        
+        # Set camera to follow player at spawn location
+        map_offset_x = spawn_world_x - WIDTH // 2
+        map_offset_y = spawn_world_y - HEIGHT // 2
+        
+        # Player screen position stays centered
+        player_pos.center = (WIDTH // 2, HEIGHT // 2)
+        
+        # Restore some health and clear enemies
+        player.health = player.max_health // 2
+        enemies.clear()
+        
+        print(f"Respawned at world coordinates ({spawn_world_x}, {spawn_world_y})")
+        
+    elif current_level == "boss_room":
+        # Respawn outside boss room (back to dungeon)
+        current_level = "dungeon"
+        spawn_world_x = 25 * TILE_SIZE
+        spawn_world_y = 38 * TILE_SIZE
+        map_offset_x = spawn_world_x - WIDTH // 2
+        map_offset_y = spawn_world_y - HEIGHT // 2
+        player_pos.center = (WIDTH // 2, HEIGHT // 2)
+        player.health = player.max_health // 2
+        enemies.clear()
+        
+        print("Respawned outside boss room")
+
+def handle_boss_combat_feedback():
+    """Add special visual effects and feedback for boss fights."""
     for enemy in enemies:
-        if enemy.attack_player(player_world_rect, current_time):
-            player.take_damage(enemy.damage, current_time)
+        if isinstance(enemy, Boss):
+            # Screen shake effect during boss phase changes
+            if hasattr(enemy, 'last_phase_change'):
+                time_since_phase_change = pygame.time.get_ticks() - enemy.last_phase_change
+                if time_since_phase_change < 500:  # Screen shake for 0.5 seconds
+                    shake_intensity = max(0, 10 - (time_since_phase_change / 25))
+                    # You can implement screen shake by slightly offsetting the camera
+                    # This is just a placeholder for the concept
+                    pass
+
+def draw_boss_health_bar(screen, assets, boss):
+    """Draw a special health bar for the boss at the top of the screen."""
+    if not isinstance(boss, Boss):
+        return
+        
+    # Boss health bar at top of screen
+    bar_width = WIDTH - 100
+    bar_height = 20
+    bar_x = 50
+    bar_y = 50
+    
+    # Background
+    bg_rect = pygame.Rect(bar_x, bar_y, bar_width, bar_height)
+    pygame.draw.rect(screen, (60, 0, 0), bg_rect)
+    pygame.draw.rect(screen, (255, 255, 255), bg_rect, 3)
+    
+    # Health bar with phase-based colors
+    health_ratio = boss.health / boss.max_health
+    health_width = int(bar_width * health_ratio)
+    
+    # Color based on phase
+    if boss.phase == 1:
+        health_color = (200, 100, 100)  # Light red
+    elif boss.phase == 2:
+        health_color = (255, 150, 0)    # Orange
+    else:  # Phase 3
+        health_color = (255, 50, 50)    # Bright red
+    
+    health_rect = pygame.Rect(bar_x, bar_y, health_width, bar_height)
+    pygame.draw.rect(screen, health_color, health_rect)
+    
+    # Boss name and phase
+    name_text = f"{boss.name} - Phase {boss.phase}"
+    text_surf = assets["font"].render(name_text, True, (255, 255, 255))
+    text_rect = text_surf.get_rect(center=(WIDTH // 2, bar_y - 15))
+    screen.blit(text_surf, text_rect)
+    
+    # Health numbers
+    health_text = f"{boss.health}/{boss.max_health}"
+    health_surf = assets["small_font"].render(health_text, True, (255, 255, 255))
+    health_text_rect = health_surf.get_rect(center=(WIDTH // 2, bar_y + bar_height // 2))
+    screen.blit(health_surf, health_text_rect)
+
+def update_boss_room_enemies(dt, current_time, player_world_rect, obstacles):
+    """Special update function for boss room enemies."""
+    for enemy in enemies[:]:  # Create copy for safe iteration
+        if isinstance(enemy, Boss):
+            # Update boss with enhanced AI
+            enemy.update(dt, current_time, player_world_rect, obstacles)
             
-            # If player died, handle respawn properly
-            if player.health <= 0:
-                print("You died!")
-                if current_level == "dungeon":
-                    # Respawn outside dungeon at the portal
-                    current_level = "world"
-                    
-                    # Set proper world coordinates for dungeon portal
-                    spawn_world_x = 25 * TILE_SIZE
-                    spawn_world_y = 38 * TILE_SIZE
-                    
-                    # Set camera to follow player at spawn location
-                    map_offset_x = spawn_world_x - WIDTH // 2
-                    map_offset_y = spawn_world_y - HEIGHT // 2
-                    
-                    # Player screen position stays centered
-                    player_pos.center = (WIDTH // 2, HEIGHT // 2)
-                    
-                    # Restore some health and clear enemies
-                    player.health = player.max_health // 2
-                    enemies.clear()
-                    
-                    print(f"Respawned at world coordinates ({spawn_world_x}, {spawn_world_y})")
-                elif current_level == "boss_room":
-                    # Respawn outside dungeon
-                    current_level = "world"
-                    spawn_world_x = 25 * TILE_SIZE
-                    spawn_world_y = 38 * TILE_SIZE
-                    map_offset_x = spawn_world_x - WIDTH // 2
-                    map_offset_y = spawn_world_y - HEIGHT // 2
-                    player_pos.center = (WIDTH // 2, HEIGHT // 2)
-                    player.health = player.max_health // 2
-                    enemies.clear()
-def draw_boss_room(screen, assets):
-    """Draw the boss room level."""
-    # Dark purple background
-    screen.fill((50, 0, 100))
-    
-    # Draw room border
-    border_thickness = 20
-    pygame.draw.rect(screen, (100, 50, 150), 
-                    (border_thickness, border_thickness, 
-                     WIDTH - 2 * border_thickness, HEIGHT - 2 * border_thickness))
-    pygame.draw.rect(screen, (200, 200, 200), 
-                    (border_thickness, border_thickness, 
-                     WIDTH - 2 * border_thickness, HEIGHT - 2 * border_thickness), 3)
-    
-    # Boss room title
-    boss_text = assets["large_font"].render("BOSS ROOM", True, (255, 255, 255))
-    screen.blit(boss_text, boss_text.get_rect(center=(WIDTH // 2, 100)))
-    
-    # Exit door at bottom
-    exit_door = pygame.Rect(WIDTH // 2 - 40, HEIGHT - 50, 80, 40)
-    pygame.draw.rect(screen, (139, 69, 19), exit_door)
-    pygame.draw.rect(screen, (255, 255, 255), exit_door, 2)
-    
-    exit_text = assets["small_font"].render("Exit", True, (255, 255, 255))
-    screen.blit(exit_text, exit_text.get_rect(center=exit_door.center))
+            # Check if boss is defeated
+            if enemy.health <= 0:
+                # Boss victory!
+                floating_texts.append(FloatingText(
+                    "VICTORY!",
+                    (WIDTH // 2, HEIGHT // 2),
+                    color=(255, 215, 0),
+                    lifetime=5000
+                ))
+                
+                # Give boss rewards
+                player.gain_experience(enemy.experience_reward)
+                
+                # Maybe spawn some treasure or unlock something
+                print(f"Boss defeated! Gained {enemy.experience_reward} experience!")
+                
+                # Remove boss from enemies list
+                enemies.remove(enemy)
+                
+                # Could trigger end-game sequence or unlock new areas
+                
+        else:
+            # Regular enemy update
+            enemy.update(dt, current_time, player_world_rect, obstacles)
+
 
 def handle_boss_room_interactions(event, player_pos, assets):
     """Handle interactions specific to the boss room."""
@@ -2528,14 +3105,6 @@ def use_potion():
         return False
 
 
-def setup_dungeon():
-    """Loads dungeon layout and returns spawn point."""
-    return setup_dungeon_from_map("dungeon1")
-
-
-def setup_boss_room():
-    """Loads boss room layout from file and returns spawn point."""
-    return setup_dungeon_from_map("bossroom1")  # works same way as dungeon
 def handle_main_menu_events(screen, assets, dt):
     global game_state, menu_selected_option
     for event in pygame.event.get():
@@ -2599,7 +3168,7 @@ def main():
         elif game_state == "playing":
             handle_playing_state(screen, assets, dt)
         elif game_state == "boss_room":
-            handle_boss_room_state(screen, assets, dt)
+            handle_boss_room_state(screen, assets)
 def handle_boss_door(player_world_rect, assets):
     """Checks for boss door interaction inside dungeon."""
     global current_level
@@ -2698,7 +3267,13 @@ def handle_playing_state(screen, assets, dt):
         obstacles = dungeon_walls + stone_rects
         for enemy in enemies:
             enemy.update(dt, current_time, player_world_rect, obstacles)
+    # Boss room enemy updates
+    elif current_level == "boss_room":
+        player_world_rect = get_player_world_rect()
+        obstacles = boss_room_walls + stone_rects
         
+        # Use the specialized boss room update function
+        update_boss_room_enemies(dt, current_time, player_world_rect, obstacles)
         # Handle combat
         handle_combat(current_time)
 
@@ -2848,13 +3423,15 @@ def handle_playing_state(screen, assets, dt):
                         player_pos.center = (WIDTH // 2, HEIGHT // 2)
                         enemies.clear()
 
-                    # FIXED: Enter Boss Room (using boss1_portal instead of boss_door_rect)
+
+                    # FIXED: Enter Boss Room 
                     elif boss1_portal and player_world_rect.colliderect(boss1_portal.inflate(20, 20)):
                         current_level = "boss_room"
+                        enemies.clear()  # ✓ Clear enemies FIRST
+                        spawn_point = setup_boss_room()   # Then create the boss
                         map_offset_x = 0
                         map_offset_y = 0
-                        player_pos.center = (WIDTH // 2, HEIGHT - 100)
-                        enemies.clear()
+                        player_pos.center = spawn_point
                         print("Entered Boss Room!")
 
                     # Mine inside dungeon
