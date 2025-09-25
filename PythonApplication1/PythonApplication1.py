@@ -57,11 +57,11 @@ CRAFTING_Y = (HEIGHT - CRAFTING_PANEL_HEIGHT) // 2
 
 # Equipment GUI constants
 EQUIPMENT_SLOT_SIZE = 40
-EQUIPMENT_GAP = 25
-EQUIPMENT_ROWS = 4
-EQUIPMENT_COLS = 2
-EQUIPMENT_PANEL_WIDTH = 2 * EQUIPMENT_SLOT_SIZE + 3 * EQUIPMENT_GAP + 20
-EQUIPMENT_PANEL_HEIGHT = EQUIPMENT_ROWS * EQUIPMENT_SLOT_SIZE + (EQUIPMENT_ROWS + 1) * EQUIPMENT_GAP + 50
+EQUIPMENT_GAP = 15
+EQUIPMENT_ROWS = 2
+EQUIPMENT_COLS = 4
+EQUIPMENT_PANEL_WIDTH = 4 * EQUIPMENT_SLOT_SIZE + 5 * EQUIPMENT_GAP + 20
+EQUIPMENT_PANEL_HEIGHT = 2 * EQUIPMENT_SLOT_SIZE + 4 * EQUIPMENT_GAP + 100  # Extra space for stats
 EQUIPMENT_X = (WIDTH - EQUIPMENT_PANEL_WIDTH) // 2
 EQUIPMENT_Y = (HEIGHT - EQUIPMENT_PANEL_HEIGHT) // 2
 
@@ -1387,7 +1387,16 @@ def start_new_game():
     
     # Reset inventory and equipment
     inventory = [[None for _ in range(4)] for _ in range(4)]
-    equipment_slots = {"weapon": None}
+    equipment_slots = {
+    "weapon": None,
+    "helmet": None, 
+    "armor": None,
+    "boots": None,
+    "ring1": None,
+    "ring2": None,
+    "amulet": None,
+    "shield": None
+}
     
     # Reset quests
     npc_quest_active = False
@@ -2088,16 +2097,111 @@ def remove_item_from_inventory(item_name, quantity):
     return False
 
 def equip_item(item_to_equip):
-    """Equips a weapon from the inventory to the weapon slot."""
-    if item_to_equip and item_to_equip.category == "Weapon":
-        if equipment_slots["weapon"] is None:
-            equipment_slots["weapon"] = item_to_equip
-            print(f"{item_to_equip.name} equipped!")
+    """Enhanced equip function that handles different equipment types."""
+    global equipment_slots  # Make sure we can access the global equipment_slots
+    
+    if not item_to_equip:
+        return False
+        
+    # Determine equipment slot based on item category/name
+    slot_mapping = {
+        "Weapon": "weapon",
+        "Axe": "weapon", 
+        "Pickaxe": "weapon",
+        "Sword": "weapon",
+        # Future equipment types:
+        # "Helmet": "helmet",
+        # "Armor": "armor", 
+        # "Boots": "boots",
+        # "Ring": "ring1",  # Will need logic to choose ring1 vs ring2
+        # "Amulet": "amulet",
+        # "Shield": "shield"
+    }
+    
+    # Find appropriate slot
+    target_slot = None
+    if hasattr(item_to_equip, 'category') and item_to_equip.category in slot_mapping:
+        target_slot = slot_mapping[item_to_equip.category]
+    elif item_to_equip.name in slot_mapping:
+        target_slot = slot_mapping[item_to_equip.name]
+    
+    if not target_slot:
+        print(f"Cannot equip {item_to_equip.name} - no suitable slot found")
+        return False
+    
+    # Handle rings specially (choose empty ring slot)
+    if target_slot.startswith("ring"):
+        if equipment_slots["ring1"] is None:
+            target_slot = "ring1"
+        elif equipment_slots["ring2"] is None:
+            target_slot = "ring2"
+        else:
+            print("Both ring slots are occupied")
+            return False
+    
+    # If slot is occupied, return old item to inventory first
+    if equipment_slots[target_slot] is not None:
+        old_item = equipment_slots[target_slot]
+        if not add_item_to_inventory(old_item):
+            print("Inventory is full, cannot swap equipment")
+            return False
+    
+    # Equip the new item
+    equipment_slots[target_slot] = item_to_equip
+    print(f"{item_to_equip.name} equipped to {target_slot} slot!")
+    return True
+def unequip_item_from_slot(slot_name):
+    """Unequip item from a specific slot."""
+    global equipment_slots  # Make sure we can access the global equipment_slots
+    
+    item_to_unequip = equipment_slots.get(slot_name)
+    if item_to_unequip:
+        if add_item_to_inventory(item_to_unequip):
+            equipment_slots[slot_name] = None
+            print(f"{item_to_unequip.name} unequipped from {slot_name}!")
             return True
         else:
-            print("Weapon slot is already taken.")
+            print("Inventory is full, cannot unequip.")
+    return False
+# Fixed inventory click handling in main game loop
+def handle_inventory_click(mouse_pos):
+    """Handle clicking on inventory slots to equip items."""
+    global inventory  # Make sure we can access the global inventory
+    
+    if not show_inventory:
+        return False
+        
+    for row in range(4):
+        for col in range(4):
+            slot_x = INVENTORY_X + INVENTORY_GAP + col * (INVENTORY_SLOT_SIZE + INVENTORY_GAP)
+            slot_y = INVENTORY_Y + 40 + INVENTORY_GAP + row * (INVENTORY_SLOT_SIZE + INVENTORY_GAP)
+            slot_rect = pygame.Rect(slot_x, slot_y, INVENTORY_SLOT_SIZE, INVENTORY_SLOT_SIZE)
+            
+            if slot_rect.collidepoint(mouse_pos):
+                item_to_equip = inventory[row][col]
+                if item_to_equip:
+                    # Check if item can be equipped
+                    if (hasattr(item_to_equip, 'category') and item_to_equip.category == "Weapon") or \
+                       item_to_equip.name in ["Axe", "Pickaxe", "Sword"]:
+                        if equip_item(item_to_equip):
+                            inventory[row][col] = None  # Remove from inventory
+                            print(f"Equipped {item_to_equip.name}")
+                        return True
+                    else:
+                        print(f"{item_to_equip.name} cannot be equipped")
+                return True
     return False
 
+def handle_equipment_click(mouse_pos, slot_rects):
+    """Handle clicking on equipment slots to unequip items."""
+    if not show_equipment:
+        return
+        
+    for slot_name, slot_rect in slot_rects.items():
+        if slot_rect.collidepoint(mouse_pos):
+            unequip_item_from_slot(slot_name)
+            return True
+    return False
 def unequip_item():
     """Unequips the currently held weapon."""
     item_to_unequip = equipment_slots.get("weapon")
@@ -2942,28 +3046,111 @@ def draw_alchemy_content(screen, assets, is_hovering, content_y):
     screen.blit(text_surface, text_surface.get_rect(center=potion_button_rect.center))
 
 def draw_equipment_panel(screen, assets):
-    """Draws the equipment GUI."""
+    """Draws the expanded equipment GUI with 2 rows, 4 columns and stats display."""
+    global equipment_slots  # Make sure we can access the global equipment_slots
+    
     panel_rect = pygame.Rect(EQUIPMENT_X, EQUIPMENT_Y, EQUIPMENT_PANEL_WIDTH, EQUIPMENT_PANEL_HEIGHT)
     pygame.draw.rect(screen, (101, 67, 33), panel_rect)
+    pygame.draw.rect(screen, (255, 255, 255), panel_rect, 3)
+    
+    # Header
     header_rect = pygame.Rect(EQUIPMENT_X, EQUIPMENT_Y, EQUIPMENT_PANEL_WIDTH, 40)
     pygame.draw.rect(screen, (50, 33, 16), header_rect)
-    header_text = assets["small_font"].render("Equipment", True, (255, 255, 255))
-    screen.blit(header_text, header_text.get_rect(centerx=header_rect.centerx, top=EQUIPMENT_Y + 10))
+    header_text = assets["font"].render("Equipment", True, (255, 255, 255))
+    screen.blit(header_text, header_text.get_rect(centerx=header_rect.centerx, top=EQUIPMENT_Y + 8))
 
-    # Draw weapon slot
-    weapon_slot_rect = pygame.Rect(EQUIPMENT_X + EQUIPMENT_GAP, EQUIPMENT_Y + 40 + EQUIPMENT_GAP,
-                                     EQUIPMENT_SLOT_SIZE, EQUIPMENT_SLOT_SIZE)
-    pygame.draw.rect(screen, (70, 70, 70), weapon_slot_rect)
-    pygame.draw.rect(screen, (150, 150, 150), weapon_slot_rect, 2)
+    # Equipment slot layout
+    slot_names = [
+        ["weapon", "helmet", "armor", "boots"],      # Top row
+        ["ring1", "ring2", "amulet", "shield"]       # Bottom row
+    ]
+    
+    slot_labels = {
+        "weapon": "Weapon", "helmet": "Helmet", "armor": "Armor", "boots": "Boots",
+        "ring1": "Ring", "ring2": "Ring", "amulet": "Amulet", "shield": "Shield"
+    }
 
+    # Draw equipment slots
+    slot_rects = {}  # Store for click handling
+    start_y = EQUIPMENT_Y + 50
+    
+    for row in range(EQUIPMENT_ROWS):
+        for col in range(EQUIPMENT_COLS):
+            slot_x = EQUIPMENT_X + EQUIPMENT_GAP + col * (EQUIPMENT_SLOT_SIZE + EQUIPMENT_GAP)
+            slot_y = start_y + row * (EQUIPMENT_SLOT_SIZE + EQUIPMENT_GAP + 20)  # +20 for labels
+            
+            slot_rect = pygame.Rect(slot_x, slot_y, EQUIPMENT_SLOT_SIZE, EQUIPMENT_SLOT_SIZE)
+            slot_name = slot_names[row][col]
+            
+            # Slot background
+            pygame.draw.rect(screen, (70, 70, 70), slot_rect)
+            pygame.draw.rect(screen, (150, 150, 150), slot_rect, 2)
+            
+            # Draw equipped item if any
+            equipped_item = equipment_slots.get(slot_name)
+            if equipped_item and equipped_item.image:
+                item_image = pygame.transform.scale(equipped_item.image, (EQUIPMENT_SLOT_SIZE, EQUIPMENT_SLOT_SIZE))
+                screen.blit(item_image, slot_rect)
+            
+            # Slot label
+            label_text = assets["small_font"].render(slot_labels[slot_name], True, (255, 255, 255))
+            label_rect = label_text.get_rect(centerx=slot_rect.centerx, top=slot_rect.bottom + 2)
+            screen.blit(label_text, label_rect)
+            
+            # Store rect for click detection
+            slot_rects[slot_name] = slot_rect
+
+    # Stats display in the middle
+    stats_y = start_y + (2 * (EQUIPMENT_SLOT_SIZE + EQUIPMENT_GAP + 20)) + 10
+    stats_rect = pygame.Rect(EQUIPMENT_X + 10, stats_y, EQUIPMENT_PANEL_WIDTH - 20, 40)
+    pygame.draw.rect(screen, (40, 40, 40), stats_rect)
+    pygame.draw.rect(screen, (150, 150, 150), stats_rect, 1)
+    
+    # Calculate total equipment bonuses
+    total_damage_bonus = 0
+    total_defense_bonus = 0  # Future feature
+    
+    for item in equipment_slots.values():
+        if item:
+            total_damage_bonus += getattr(item, 'damage', 0)
+            # total_defense_bonus += getattr(item, 'defense', 0)  # Future feature
+    
+    # Display stats
     equipped_weapon = equipment_slots.get("weapon")
-    if equipped_weapon:
-        screen.blit(pygame.transform.scale(equipped_weapon.image, (EQUIPMENT_SLOT_SIZE, EQUIPMENT_SLOT_SIZE)), weapon_slot_rect)
-        
-        # Show weapon damage
-        damage_text = f"Damage: +{equipped_weapon.damage}"
-        damage_surface = assets["small_font"].render(damage_text, True, (255, 255, 255))
-        screen.blit(damage_surface, (weapon_slot_rect.x, weapon_slot_rect.bottom + 5))
+    weapon_name = equipped_weapon.name if equipped_weapon else "None"
+    
+    stats_text = f"Weapon: {weapon_name} | Damage Bonus: +{total_damage_bonus}"
+    stats_surf = assets["small_font"].render(stats_text, True, (255, 255, 255))
+    stats_text_rect = stats_surf.get_rect(center=stats_rect.center)
+    screen.blit(stats_surf, stats_text_rect)
+    
+    return slot_rects  # Return for click handling
+
+    # Stats display in the middle
+    stats_y = start_y + (2 * (EQUIPMENT_SLOT_SIZE + EQUIPMENT_GAP + 20)) + 10
+    stats_rect = pygame.Rect(EQUIPMENT_X + 10, stats_y, EQUIPMENT_PANEL_WIDTH - 20, 40)
+    pygame.draw.rect(screen, (40, 40, 40), stats_rect)
+    pygame.draw.rect(screen, (150, 150, 150), stats_rect, 1)
+    
+    # Calculate total equipment bonuses
+    total_damage_bonus = 0
+    total_defense_bonus = 0  # Future feature
+    
+    for item in equipment_slots.values():
+        if item:
+            total_damage_bonus += getattr(item, 'damage', 0)
+            # total_defense_bonus += getattr(item, 'defense', 0)  # Future feature
+    
+    # Display stats
+    equipped_weapon = equipment_slots.get("weapon")
+    weapon_name = equipped_weapon.name if equipped_weapon else "None"
+    
+    stats_text = f"Weapon: {weapon_name} | Damage Bonus: +{total_damage_bonus}"
+    stats_surf = assets["small_font"].render(stats_text, True, (255, 255, 255))
+    stats_text_rect = stats_surf.get_rect(center=stats_rect.center)
+    screen.blit(stats_surf, stats_text_rect)
+    
+    return slot_rects  # Return for click handling
 
 def draw_hud(screen, assets):
     """Draws the main HUD elements (icons)."""
@@ -3574,30 +3761,15 @@ def handle_playing_state(screen, assets, dt):
                             print("Brewing a Potion...")
                         else:
                             print("Not enough flowers!")
-
-            # Equipment
-            if show_equipment:
-                weapon_slot_rect = pygame.Rect(EQUIPMENT_X + EQUIPMENT_GAP, EQUIPMENT_Y + 40 + EQUIPMENT_GAP,
-                                                EQUIPMENT_SLOT_SIZE, EQUIPMENT_SLOT_SIZE)
-                if weapon_slot_rect.collidepoint(event.pos):
-                    unequip_item()
-                    
-            # Inventory
-            if show_inventory:
-                for row in range(4):
-                    for col in range(4):
-                        slot_x = INVENTORY_X + INVENTORY_GAP + col * (INVENTORY_SLOT_SIZE + INVENTORY_GAP)
-                        slot_y = INVENTORY_Y + 40 + INVENTORY_GAP + row * (INVENTORY_SLOT_SIZE + INVENTORY_GAP)
-                        slot_rect = pygame.Rect(slot_x, slot_y, INVENTORY_SLOT_SIZE, INVENTORY_SLOT_SIZE)
-                        if slot_rect.collidepoint(event.pos):
-                            try:
-                                item_to_equip = inventory[row][col]
-                                if item_to_equip and item_to_equip.category == "Weapon":
-                                    if equip_item(item_to_equip):
-                                        inventory[row][col] = None
-                                        break
-                            except Exception as e:
-                                print("Error equipping item:", e)
+            
+            # Equipment GUI handling - FIXED
+            elif show_equipment:
+                equipment_slot_rects = draw_equipment_panel(screen, assets)
+                handle_equipment_click(event.pos, equipment_slot_rects)
+                            
+            # Inventory GUI handling - FIXED
+            elif show_inventory:
+                handle_inventory_click(event.pos)
 
     # Game State Updates
     # NPC idle animations
@@ -3788,7 +3960,7 @@ def handle_playing_state(screen, assets, dt):
     if show_crafting:
         draw_crafting_panel(screen, assets, is_hovering)
     if show_equipment:
-        draw_equipment_panel(screen, assets)
+        equipment_slot_rects = draw_equipment_panel(screen, assets)  # Store the slot rects
     
     # Draw vendor GUI
     if show_vendor_gui:
