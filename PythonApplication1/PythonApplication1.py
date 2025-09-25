@@ -51,7 +51,7 @@ INVENTORY_Y = (HEIGHT - INVENTORY_HEIGHT) // 2
 
 # Crafting GUI constants
 CRAFTING_PANEL_WIDTH = 420
-CRAFTING_PANEL_HEIGHT = 220
+CRAFTING_PANEL_HEIGHT = 300
 CRAFTING_X = (WIDTH - CRAFTING_PANEL_WIDTH) // 2
 CRAFTING_Y = (HEIGHT - CRAFTING_PANEL_HEIGHT) // 2
 
@@ -828,6 +828,11 @@ is_mining = False
 mining_timer = 0
 mining_target_stone = None
 
+# Pause menu state
+show_pause_menu = False
+pause_menu_selected_option = 0
+pause_button_rects = {}
+
 # UI state
 show_inventory = False
 show_crafting = False
@@ -900,7 +905,9 @@ pickaxe_button_rect = None
 potion_button_rect = None
 smithing_tab_rect = None
 alchemy_tab_rect = None
-
+chest_button_rect = None
+helmet_button_rect = None
+boots_button_rect = None
 # Game state management
 game_state = "main_menu"  # "main_menu", "playing", "save_select"
 selected_save_slot = 1
@@ -936,7 +943,137 @@ def find_safe_spawn_position(avoid_rects, spawn_area_rect, entity_size=(PLAYER_S
     
     # If no safe position found, return center of spawn area
     return (spawn_area_rect.centerx - entity_size[0]//2, spawn_area_rect.centery - entity_size[1]//2)
+def draw_pause_menu(screen, assets):
+    """Draw the in-game pause/options menu."""
+    if not show_pause_menu:
+        return
+    
+    global pause_button_rects
+    pause_button_rects = {}
+    
+    # Semi-transparent overlay
+    overlay = pygame.Surface((WIDTH, HEIGHT))
+    overlay.set_alpha(128)
+    overlay.fill((0, 0, 0))
+    screen.blit(overlay, (0, 0))
+    
+    # Main panel
+    panel_width = 400
+    panel_height = 300
+    panel_x = (WIDTH - panel_width) // 2
+    panel_y = (HEIGHT - panel_height) // 2
+    panel_rect = pygame.Rect(panel_x, panel_y, panel_width, panel_height)
+    
+    pygame.draw.rect(screen, (40, 40, 60), panel_rect)
+    pygame.draw.rect(screen, (255, 255, 255), panel_rect, 3)
+    
+    # Title
+    title_text = assets["large_font"].render("Game Paused", True, (255, 255, 255))
+    title_rect = title_text.get_rect(center=(WIDTH // 2, panel_y + 40))
+    screen.blit(title_text, title_rect)
+    
+    # Menu options
+    menu_options = ["Resume", "Save Game", "Main Menu", "Exit Game"]
+    button_height = 50
+    button_width = 300
+    start_y = panel_y + 80
+    
+    mouse_pos = pygame.mouse.get_pos()
+    
+    for i, option in enumerate(menu_options):
+        button_y = start_y + i * (button_height + 10)
+        button_rect = pygame.Rect((WIDTH - button_width) // 2, button_y, button_width, button_height)
+        
+        # Check for hover
+        is_hovered = button_rect.collidepoint(mouse_pos)
+        is_selected = i == pause_menu_selected_option
+        
+        # Button colors
+        if is_selected or is_hovered:
+            button_color = (70, 70, 100)
+            text_color = (255, 255, 0)
+        else:
+            button_color = (50, 50, 70)
+            text_color = (255, 255, 255)
+        
+        # Draw button
+        pygame.draw.rect(screen, button_color, button_rect)
+        pygame.draw.rect(screen, (200, 200, 200), button_rect, 2)
+        
+        # Button text
+        text_surf = assets["font"].render(option, True, text_color)
+        text_rect = text_surf.get_rect(center=button_rect.center)
+        screen.blit(text_surf, text_rect)
+        
+        # Store rect for clicking
+        pause_button_rects[option.lower().replace(" ", "_")] = button_rect
+    
+    # Instructions
+    instruction_text = assets["small_font"].render("Use arrow keys or mouse to navigate, ENTER or click to select", True, (200, 200, 200))
+    instruction_rect = instruction_text.get_rect(center=(WIDTH // 2, panel_y + panel_height - 30))
+    screen.blit(instruction_text, instruction_rect)
 
+def handle_pause_menu_input(event, assets):
+    """Handle input for the pause menu."""
+    global show_pause_menu, pause_menu_selected_option, game_state
+    
+    if event.type == pygame.KEYDOWN:
+        if event.key == pygame.K_ESCAPE:
+            show_pause_menu = False
+        elif event.key == pygame.K_UP:
+            pause_menu_selected_option = (pause_menu_selected_option - 1) % 4
+        elif event.key == pygame.K_DOWN:
+            pause_menu_selected_option = (pause_menu_selected_option + 1) % 4
+        elif event.key == pygame.K_RETURN:
+            execute_pause_menu_option(assets)
+    
+    elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+        # Handle mouse clicks
+        for option, rect in pause_button_rects.items():
+            if rect.collidepoint(event.pos):
+                # Set selection and execute
+                if option == "resume":
+                    pause_menu_selected_option = 0
+                elif option == "save_game":
+                    pause_menu_selected_option = 1
+                elif option == "main_menu":
+                    pause_menu_selected_option = 2
+                elif option == "exit_game":
+                    pause_menu_selected_option = 3
+                execute_pause_menu_option(assets)
+                break
+    
+    elif event.type == pygame.MOUSEMOTION:
+        # Handle mouse hover
+        for i, (option, rect) in enumerate(pause_button_rects.items()):
+            if rect.collidepoint(event.pos):
+                if option == "resume":
+                    pause_menu_selected_option = 0
+                elif option == "save_game":
+                    pause_menu_selected_option = 1
+                elif option == "main_menu":
+                    pause_menu_selected_option = 2
+                elif option == "exit_game":
+                    pause_menu_selected_option = 3
+                break
+
+def execute_pause_menu_option(assets):
+    """Execute the selected pause menu option."""
+    global show_pause_menu, game_state
+    
+    if pause_menu_selected_option == 0:  # Resume
+        show_pause_menu = False
+    elif pause_menu_selected_option == 1:  # Save Game
+        # You can implement save slot selection here or quick save
+        if save_game_data(1):  # Quick save to slot 1
+            print("Game saved!")
+        show_pause_menu = False
+    elif pause_menu_selected_option == 2:  # Main Menu
+        show_pause_menu = False
+        game_state = "main_menu"
+    elif pause_menu_selected_option == 3:  # Exit Game
+        pygame.quit()
+        sys.exit()
 def find_nearest_enemy(player_world_rect):
     """Find the nearest enemy within attack range."""
     nearest_enemy = None
@@ -1525,7 +1662,9 @@ def load_assets():
     pickaxe_image = try_load_image("pickaxe.png", (TILE_SIZE, TILE_SIZE), (105, 105, 105))
     stone_image = try_load_image("stone.png", (TILE_SIZE // 2, TILE_SIZE // 2), (150, 150, 150))
     ore_image = try_load_image("ore.png", (TILE_SIZE // 2, TILE_SIZE // 2), (139, 69, 19))
-
+    chest_image = try_load_image("chest.png", (TILE_SIZE, TILE_SIZE), (139, 69, 19))
+    helmet_image = try_load_image("helmet.png", (TILE_SIZE, TILE_SIZE), (105, 105, 105))
+    boots_image = try_load_image("boots.png", (TILE_SIZE, TILE_SIZE), (101, 67, 33))
     # --- UI Icons ---
     backpack_icon = try_load_image("bag.png", (ICON_SIZE, ICON_SIZE), (101, 67, 33))
     crafting_icon = try_load_image("craft.png", (ICON_SIZE, ICON_SIZE), (160, 82, 45))
@@ -1580,7 +1719,9 @@ def load_assets():
     flower_item = Item("Flower", flower_images[0])
     potion_item = Item("Potion", potion_image)
     coin_item = Item("Coin", coin_image)
-
+    chest_item = Item("Chest Armor", chest_image, category="Armor", damage=0)
+    helmet_item = Item("Helmet", helmet_image, category="Helmet", damage=0)
+    boots_item = Item("Boots", boots_image, category="Boots", damage=0)
     # --- Boss Door Frames ---
     boss_door_frames = load_boss_door_frames()
 
@@ -1622,7 +1763,9 @@ def load_assets():
         "flower_item": flower_item,
         "potion_item": potion_item,
         "coin_item": coin_item,
-
+        "chest_item": chest_item,
+        "helmet_item": helmet_item,
+        "boots_item": boots_item,
         # NPCs
         "npc_image": npc_image,
         "miner_image": miner_image,
@@ -1732,26 +1875,42 @@ def setup_colliders():
             # Fallback to your existing procedural generation
             generate_procedural_world()
 def draw_main_menu(screen, assets):
-    """Draw the main menu screen."""
+    """Draw the main menu screen with enhanced mouse hover effects."""
     screen.fill((20, 30, 40))  # Dark blue background
+    
+    # Get mouse position for hover effects
+    mouse_pos = pygame.mouse.get_pos()
     
     # Title
     title_text = assets["large_font"].render("Adventure Game", True, (255, 255, 255))
     title_rect = title_text.get_rect(center=(WIDTH // 2, HEIGHT // 4))
     screen.blit(title_text, title_rect)
     
-    # Menu options
+    # Menu options with enhanced hover effects
     menu_options = ["New Game", "Load Game", "Exit"]
     
     for i, option in enumerate(menu_options):
-        color = (255, 255, 0) if i == menu_selected_option else (255, 255, 255)
-        option_text = assets["font"].render(option, True, color)
+        # Determine colors based on selection and hover
+        if i == menu_selected_option:
+            text_color = (255, 255, 0)  # Yellow when selected
+            bg_color = (50, 50, 100)   # Blue background
+        else:
+            text_color = (255, 255, 255)  # White when not selected
+            bg_color = None
+        
+        option_text = assets["font"].render(option, True, text_color)
         option_rect = option_text.get_rect(center=(WIDTH // 2, HEIGHT // 2 + i * 50))
+        
+        # Draw background for selected option
+        if bg_color:
+            bg_rect = option_rect.inflate(40, 20)
+            pygame.draw.rect(screen, bg_color, bg_rect, border_radius=10)
+        
         screen.blit(option_text, option_rect)
         
-        # Draw selection indicator
+        # Draw selection border
         if i == menu_selected_option:
-            pygame.draw.rect(screen, (255, 255, 0), option_rect.inflate(20, 10), 2)
+            pygame.draw.rect(screen, (255, 255, 0), option_rect.inflate(20, 10), 2, border_radius=5)
 
 def draw_save_select_menu(screen, assets):
     """Draw the save slot selection screen."""
@@ -1805,9 +1964,10 @@ def generate_procedural_world():
     pass  # Replace with your existing code if needed
 def give_starting_items(assets):
     """Adds initial items to the inventory."""
+    add_item_to_inventory(assets["stone_item"])
     add_item_to_inventory(assets["potion_item"])
     add_item_to_inventory(assets["potion_item"])
-    add_item_to_inventory(assets["potion_item"])
+    add_item_to_inventory(assets["stone_item"])
     add_item_to_inventory(assets["axe_item"])
 
 # COMPLETE BUG FIXES - Replace these functions in your code
@@ -1903,39 +2063,33 @@ def handle_player_death():
     global current_level, map_offset_x, map_offset_y, player_pos
     
     print("You died!")
-    if current_level == "dungeon":
-        # Respawn outside dungeon at the portal
-        current_level = "world"
-        
-        # Set proper world coordinates for dungeon portal
-        spawn_world_x = 25 * TILE_SIZE
-        spawn_world_y = 38 * TILE_SIZE
-        
-        # Set camera to follow player at spawn location
-        map_offset_x = spawn_world_x - WIDTH // 2
-        map_offset_y = spawn_world_y - HEIGHT // 2
-        
-        # Player screen position stays centered
-        player_pos.center = (WIDTH // 2, HEIGHT // 2)
-        
-        # Restore some health and clear enemies
-        player.health = player.max_health // 2
-        enemies.clear()
-        
-        print(f"Respawned at world coordinates ({spawn_world_x}, {spawn_world_y})")
-        
-    elif current_level == "boss_room":
-        # Respawn outside boss room (back to dungeon)
-        current_level = "dungeon"
-        spawn_world_x = 25 * TILE_SIZE
-        spawn_world_y = 38 * TILE_SIZE
-        map_offset_x = spawn_world_x - WIDTH // 2
-        map_offset_y = spawn_world_y - HEIGHT // 2
-        player_pos.center = (WIDTH // 2, HEIGHT // 2)
-        player.health = player.max_health // 2
-        enemies.clear()
-        
-        print("Respawned outside boss room")
+    
+    # Always respawn at the world spawn point regardless of where player died
+    current_level = "world"
+    
+    # Get the player spawn point from map data
+    # You can either load it from your map file or use a default
+    try:
+        # Try to load spawn from current map
+        map_data = load_text_map("forest.txt")  # or whatever your main map is called
+        spawn_world_x, spawn_world_y = map_data['spawn_point']
+    except:
+        # Fallback spawn point if map loading fails
+        spawn_world_x = WIDTH // 2
+        spawn_world_y = HEIGHT // 2
+    
+    # Set camera to center on spawn location
+    map_offset_x = spawn_world_x - WIDTH // 2
+    map_offset_y = spawn_world_y - HEIGHT // 2
+    
+    # Player screen position stays centered
+    player_pos.center = (WIDTH // 2, HEIGHT // 2)
+    
+    # Restore some health and clear enemies
+    player.health = player.max_health // 2
+    enemies.clear()
+    
+    print(f"Respawned at player spawn ({spawn_world_x}, {spawn_world_y})")
 
 def handle_boss_combat_feedback():
     """Add special visual effects and feedback for boss fights."""
@@ -2978,34 +3132,56 @@ def draw_crafting_panel(screen, assets, is_hovering):
         draw_alchemy_content(screen, assets, is_hovering, content_y)
 
 def draw_smithing_content(screen, assets, is_hovering, content_y):
-    """Draws the smithing crafting options."""
-    global axe_button_rect, pickaxe_button_rect
+    """Draws the smithing crafting options with armor."""
+    global axe_button_rect, pickaxe_button_rect, chest_button_rect, helmet_button_rect, boots_button_rect
     
     button_width, button_height, gap = 180, 50, 20
     log_count = get_item_count("Log")
-
-    # Axe Button
-    axe_button_rect = pygame.Rect(CRAFTING_X + gap, content_y + gap, button_width, button_height)
+    stone_count = get_item_count("Stone")
+    
+    # Calculate positions for 5 items (2 columns)
+    col1_x = CRAFTING_X + gap
+    col2_x = CRAFTING_X + gap + button_width + gap
+    
+    # Weapons (left column)
+    axe_button_rect = pygame.Rect(col1_x, content_y + gap, button_width, button_height)
     req_logs_axe = 5
-
-    # Pickaxe Button
-    pickaxe_button_rect = pygame.Rect(CRAFTING_X + gap, axe_button_rect.bottom + gap, button_width, button_height)
+    
+    pickaxe_button_rect = pygame.Rect(col1_x, content_y + gap + (button_height + gap), button_width, button_height)
     req_logs_pickaxe = 10
-
+    
+    # Armor (right column)
+    helmet_button_rect = pygame.Rect(col2_x, content_y + gap, button_width, button_height)
+    req_stone_helmet = 8
+    
+    chest_button_rect = pygame.Rect(col2_x, content_y + gap + (button_height + gap), button_width, button_height)
+    req_stone_chest = 15
+    
+    boots_button_rect = pygame.Rect(col2_x, content_y + gap + 2 * (button_height + gap), button_width, button_height)
+    req_stone_boots = 6
+    
+    # Define all craftable items
     buttons = [
-        (axe_button_rect, "axe", req_logs_axe, assets["axe_item"]),
-        (pickaxe_button_rect, "pickaxe", req_logs_pickaxe, assets["pickaxe_item"])
-    ]
-
-    for rect, item_name, req_logs, item_obj in buttons:
-        can_craft = log_count >= req_logs
+        # Weapons (use logs)
+        (axe_button_rect, "axe", req_logs_axe, assets["axe_item"], "Log", log_count),
+        (pickaxe_button_rect, "pickaxe", req_logs_pickaxe, assets["pickaxe_item"], "Log", log_count),
         
-        if is_crafting and item_to_craft and item_to_craft.name.lower() == item_name:
+        # Armor (use stones)
+        (helmet_button_rect, "helmet", req_stone_helmet, assets["helmet_item"], "Stone", stone_count),
+        (chest_button_rect, "chest", req_stone_chest, assets["chest_item"], "Stone", stone_count),
+        (boots_button_rect, "boots", req_stone_boots, assets["boots_item"], "Stone", stone_count),
+    ]
+    
+    # Draw all buttons
+    for rect, item_name, required_amount, item_obj, material_type, material_count in buttons:
+        can_craft = material_count >= required_amount
+        
+        if is_crafting and item_to_craft and item_to_craft.name.lower().replace(" ", "") == item_name.replace("_", ""):
             progress = (crafting_timer / CRAFTING_TIME_MS) * 100
             text_to_display = f"Crafting... {int(progress)}%"
             color = (120, 120, 120)
         elif is_hovering == item_name:
-            text_to_display = f"{item_obj.name}: {log_count}/{req_logs} Logs"
+            text_to_display = f"{item_obj.name}: {material_count}/{required_amount} {material_type}"
             color = (0, 100, 0) if can_craft else (50, 50, 50)
         else:
             text_to_display = f"Craft {item_obj.name}"
@@ -3013,8 +3189,21 @@ def draw_smithing_content(screen, assets, is_hovering, content_y):
 
         pygame.draw.rect(screen, color, rect)
         pygame.draw.rect(screen, (150, 150, 150), rect, 2)
+        
+        # Use smaller font for longer text
         text_surface = assets["small_font"].render(text_to_display, True, (255, 255, 255))
-        screen.blit(text_surface, text_surface.get_rect(center=rect.center))
+        
+        # Center the text, but handle text that might be too wide
+        text_rect = text_surface.get_rect()
+        if text_rect.width > rect.width - 10:
+            # Scale down text if too wide
+            scale_factor = (rect.width - 10) / text_rect.width
+            new_width = int(text_rect.width * scale_factor)
+            new_height = int(text_rect.height * scale_factor)
+            text_surface = pygame.transform.scale(text_surface, (new_width, new_height))
+        
+        text_rect = text_surface.get_rect(center=rect.center)
+        screen.blit(text_surface, text_rect)
 
 def draw_alchemy_content(screen, assets, is_hovering, content_y):
     """Draws the alchemy crafting options."""
@@ -3294,48 +3483,115 @@ def use_potion():
 
 def handle_main_menu_events(screen, assets, dt):
     global game_state, menu_selected_option
+    
+    # Get mouse position for hover detection
+    mouse_pos = pygame.mouse.get_pos()
+    
+    # Define menu option rectangles (you'll need these for click detection)
+    menu_options = ["New Game", "Load Game", "Exit"]
+    option_rects = []
+    
+    for i, option in enumerate(menu_options):
+        option_text = assets["font"].render(option, True, (255, 255, 255))
+        option_rect = option_text.get_rect(center=(WIDTH // 2, HEIGHT // 2 + i * 50))
+        option_rects.append(option_rect)
+    
+    # Check for mouse hover to update selected option
+    for i, rect in enumerate(option_rects):
+        if rect.collidepoint(mouse_pos):
+            menu_selected_option = i
+            break
+    
     for event in pygame.event.get():
         if event.type == pygame.QUIT:
             pygame.quit()
             sys.exit()
         elif event.type == pygame.KEYDOWN:
-            if event.key == pygame.K_w:
+            # Keyboard navigation
+            if event.key == pygame.K_w or event.key == pygame.K_UP:
                 menu_selected_option = (menu_selected_option - 1) % 3
-            elif event.key == pygame.K_s:
+            elif event.key == pygame.K_s or event.key == pygame.K_DOWN:
                 menu_selected_option = (menu_selected_option + 1) % 3
-            elif event.key == pygame.K_RETURN:
-                if menu_selected_option == 0:  # New Game
-                    start_new_game()
-                    game_state = "playing"
-                elif menu_selected_option == 1:  # Load Game
-                    game_state = "save_select"
-                elif menu_selected_option == 2:  # Exit
-                    pygame.quit()
-                    sys.exit()
+            elif event.key == pygame.K_RETURN or event.key == pygame.K_SPACE:
+                execute_menu_option()
+        elif event.type == pygame.MOUSEBUTTONDOWN:
+            # Mouse click handling
+            if event.button == 1:  # Left mouse button
+                for i, rect in enumerate(option_rects):
+                    if rect.collidepoint(event.pos):
+                        menu_selected_option = i
+                        execute_menu_option()
+                        break
+    
     draw_main_menu(screen, assets)
     pygame.display.flip()
 
+def execute_save_slot_selection():
+    """Execute the selected save slot."""
+    global game_state
+    
+    if load_game_data(selected_save_slot):
+        game_state = "playing"
+        setup_colliders()
+    else:
+        start_new_game()
+        game_state = "playing"
+
+def execute_menu_option():
+    """Execute the selected menu option."""
+    global game_state
+    
+    if menu_selected_option == 0:  # New Game
+        start_new_game()
+        game_state = "playing"
+    elif menu_selected_option == 1:  # Load Game
+        game_state = "save_select"
+    elif menu_selected_option == 2:  # Exit
+        pygame.quit()
+        sys.exit()
 
 def handle_save_select_events(screen, assets, dt):
     global game_state, selected_save_slot
+    
+    # Get mouse position
+    mouse_pos = pygame.mouse.get_pos()
+    
+    # Define save slot rectangles
+    slot_rects = []
+    for i in range(4):
+        slot_y = HEIGHT // 2 + i * 60 - 120
+        slot_rect = pygame.Rect(WIDTH // 2 - 200, slot_y, 400, 50)
+        slot_rects.append(slot_rect)
+    
+    # Check for mouse hover
+    for i, rect in enumerate(slot_rects):
+        if rect.collidepoint(mouse_pos):
+            selected_save_slot = i + 1
+            break
+    
     for event in pygame.event.get():
         if event.type == pygame.QUIT:
             pygame.quit()
             sys.exit()
         elif event.type == pygame.KEYDOWN:
+            # Keyboard navigation
             if event.key == pygame.K_UP:
                 selected_save_slot = max(1, selected_save_slot - 1)
             elif event.key == pygame.K_DOWN:
                 selected_save_slot = min(4, selected_save_slot + 1)
             elif event.key == pygame.K_RETURN:
-                if load_game_data(selected_save_slot):
-                    game_state = "playing"
-                    setup_colliders()
-                else:
-                    start_new_game()
-                    game_state = "playing"
+                execute_save_slot_selection()
             elif event.key == pygame.K_ESCAPE:
                 game_state = "main_menu"
+        elif event.type == pygame.MOUSEBUTTONDOWN:
+            # Mouse click handling
+            if event.button == 1:  # Left mouse button
+                for i, rect in enumerate(slot_rects):
+                    if rect.collidepoint(event.pos):
+                        selected_save_slot = i + 1
+                        execute_save_slot_selection()
+                        break
+    
     draw_save_select_menu(screen, assets)
     pygame.display.flip()
 
@@ -3393,7 +3649,7 @@ def handle_playing_state(screen, assets, dt):
     global show_vendor_gui, vendor_tab
     global enemies
     global equipment_slots
-    
+    global show_pause_menu, pause_menu_selected_option
     # Load frames if not already loaded
     if not hasattr(handle_playing_state, 'frames_loaded'):
         handle_playing_state.player_frames = load_player_frames()
@@ -3436,6 +3692,12 @@ def handle_playing_state(screen, assets, dt):
                 is_hovering = "axe"
             elif pickaxe_button_rect and pickaxe_button_rect.collidepoint(mouse_pos):
                 is_hovering = "pickaxe"
+            elif helmet_button_rect and helmet_button_rect.collidepoint(mouse_pos):
+                is_hovering = "helmet"
+            elif chest_button_rect and chest_button_rect.collidepoint(mouse_pos):
+                is_hovering = "chest"
+            elif boots_button_rect and boots_button_rect.collidepoint(mouse_pos):
+                is_hovering = "boots"
         elif crafting_tab == "alchemy":
             if potion_button_rect and potion_button_rect.collidepoint(mouse_pos):
                 is_hovering = "potion"
@@ -3469,7 +3731,9 @@ def handle_playing_state(screen, assets, dt):
         if event.type == pygame.QUIT:
             pygame.quit()
             sys.exit()
-        
+        if show_pause_menu:
+            handle_pause_menu_input(event, assets)
+            continue
         # Handle boss room interactions
         if current_level == "boss_room":
             handle_boss_room_interactions(event, player_pos, assets)
@@ -3680,12 +3944,17 @@ def handle_playing_state(screen, assets, dt):
                     show_miner_dialog = False
                     print("Quest completed! You received 15 coins as a reward!")
 
-            elif event.key == pygame.K_ESCAPE and (show_npc_dialog or show_miner_dialog):
-                show_npc_dialog = False
-                show_miner_dialog = False
-
-            elif event.key == pygame.K_ESCAPE and show_vendor_gui:
-                show_vendor_gui = False
+            if event.key == pygame.K_ESCAPE:
+                # Close any open UI first
+                if show_npc_dialog or show_miner_dialog:
+                    show_npc_dialog = False
+                    show_miner_dialog = False
+                elif show_vendor_gui:
+                    show_vendor_gui = False
+                elif not (show_inventory or show_crafting or show_equipment):
+                    # Only open pause menu if no other UI is open
+                    show_pause_menu = True
+                    pause_menu_selected_option = 0
 
         # Mouse click handling (vendor, crafting, inventory, equipment)
         if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
@@ -3732,6 +4001,7 @@ def handle_playing_state(screen, assets, dt):
                     crafting_tab = "alchemy"
                 
                 elif crafting_tab == "smithing":
+                    # Weapons
                     if axe_button_rect and axe_button_rect.collidepoint(event.pos):
                         if get_item_count("Log") >= 5:
                             is_crafting = True
@@ -3741,6 +4011,7 @@ def handle_playing_state(screen, assets, dt):
                             print("Crafting an Axe...")
                         else:
                             print("Not enough logs!")
+    
                     elif pickaxe_button_rect and pickaxe_button_rect.collidepoint(event.pos):
                         if get_item_count("Log") >= 10:
                             is_crafting = True
@@ -3750,6 +4021,37 @@ def handle_playing_state(screen, assets, dt):
                             print("Crafting a Pickaxe...")
                         else:
                             print("Not enough logs!")
+    
+                    # Armor
+                    elif helmet_button_rect and helmet_button_rect.collidepoint(event.pos):
+                        if get_item_count("Stone") >= 8:
+                            is_crafting = True
+                            crafting_timer = 0
+                            item_to_craft = assets["helmet_item"]
+                            remove_item_from_inventory("Stone", 8)
+                            print("Crafting a Helmet...")
+                        else:
+                            print("Not enough stones!")
+    
+                    elif chest_button_rect and chest_button_rect.collidepoint(event.pos):
+                        if get_item_count("Stone") >= 15:
+                            is_crafting = True
+                            crafting_timer = 0
+                            item_to_craft = assets["chest_item"]
+                            remove_item_from_inventory("Stone", 15)
+                            print("Crafting Chest Armor...")
+                        else:
+                            print("Not enough stones!")
+    
+                    elif boots_button_rect and boots_button_rect.collidepoint(event.pos):
+                        if get_item_count("Stone") >= 6:
+                            is_crafting = True
+                            crafting_timer = 0
+                            item_to_craft = assets["boots_item"]
+                            remove_item_from_inventory("Stone", 6)
+                            print("Crafting Boots...")
+                        else:
+                            print("Not enough stones!")
                 
                 elif crafting_tab == "alchemy":
                     if potion_button_rect and potion_button_rect.collidepoint(event.pos):
@@ -3955,13 +4257,15 @@ def handle_playing_state(screen, assets, dt):
     draw_miner_dialog(screen, assets)
 
     # Draw UI panels
+    # Draw pause menu on top of everything else
+    if show_pause_menu:
+        draw_pause_menu(screen, assets)
     if show_inventory:
         draw_inventory(screen, assets)
     if show_crafting:
         draw_crafting_panel(screen, assets, is_hovering)
     if show_equipment:
         equipment_slot_rects = draw_equipment_panel(screen, assets)  # Store the slot rects
-    
     # Draw vendor GUI
     if show_vendor_gui:
         draw_vendor_gui(screen, assets)
