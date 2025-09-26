@@ -10,7 +10,7 @@ import sys
 import math
 import pygame
 import json
-
+import pygame.mixer
 # --- CONSTANTS ---
 WIDTH, HEIGHT = 800, 600
 TILE_SIZE = 50
@@ -40,7 +40,7 @@ attack_timer = 0
 PLAYER_SIZE_INDOOR = 80
 PLAYER_MAX_HEALTH = 100
 PLAYER_BASE_DAMAGE = 15
-
+PLAYER_BASE_DEFENSE = 0
 # Inventory GUI constants
 INVENTORY_SLOT_SIZE = 40
 INVENTORY_GAP = 5
@@ -70,16 +70,27 @@ DUNGEON_SIZE = 30
 DUNGEON_SPAWN_X = 5 * TILE_SIZE
 DUNGEON_SPAWN_Y = 5 * TILE_SIZE
 
-
+# Music constants
+MUSIC_FILES = {
+    "main_menu": "main.mp3",       # points to main.mp3
+    "forest": "forest.mp3",        # points to forest.mp3
+    "dungeon": "dungeon_theme.mp3", 
+    "boss_room": "music/boss_battle.mp3"
+}
 
 # --- CLASSES ---
 class Item:
-    def __init__(self, name, image, count=1, category=None, damage=0):
+    def __init__(self, name, image=None, count=1, category=None, damage=0, defense=0):
+        if image is None:
+            # fallback magenta box if image is missing
+            image = pygame.Surface((32, 32))
+            image.fill((255, 0, 255))
         self.name = name
         self.image = image
         self.count = count
         self.category = category
         self.damage = damage
+        self.defense = defense
 
 class FloatingText:
     def __init__(self, text, pos, color=(255, 0, 0), lifetime=1000):
@@ -128,12 +139,12 @@ class Player:
         # Base stats
         self.base_max_health = PLAYER_MAX_HEALTH
         self.base_damage = PLAYER_BASE_DAMAGE
-
+        self.base_defense = PLAYER_BASE_DEFENSE
         # Dynamic stats
         self.max_health = self.base_max_health
         self.health = self.max_health
         self.damage = self.base_damage
-
+        self.defense = self.base_defense
         # Combat & state
         self.last_attack_time = 0
         self.is_invulnerable = False
@@ -151,20 +162,37 @@ class Player:
     # Combat
     # ------------------------
     def take_damage(self, damage_amount, current_time):
-        """Apply damage, respecting invulnerability & effects."""
+        """Apply damage, respecting invulnerability, defense, and effects."""
         if self.is_invulnerable:
             return False
 
-        final_damage = max(1, damage_amount)  # prevent zero damage
+        # FIXED: Calculate damage reduction from defense
+        total_defense = self.get_total_defense()
+    
+        # Defense reduces damage by a percentage (diminishing returns formula)
+        damage_reduction = total_defense / (total_defense + 100)
+    
+        # Apply damage reduction
+        reduced_damage = damage_amount * (1 - damage_reduction)
+        final_damage = max(1, int(reduced_damage))  # Always take at least 1 damage
+    
         self.health -= final_damage
         self.is_invulnerable = True
         self.invulnerability_timer = current_time
 
-        floating_texts.append(FloatingText(
-            f"-{final_damage}",
-            (self.rect.x, self.rect.y - 15),
-            color=(255, 0, 0)
-        ))
+        # Show damage feedback with defense info
+        if total_defense > 0:
+            floating_texts.append(FloatingText(
+                f"-{final_damage} ({int(damage_reduction*100)}% blocked)",
+                (self.rect.x, self.rect.y - 15),
+                color=(255, 150, 0)  # Orange for reduced damage
+            ))
+        else:
+            floating_texts.append(FloatingText(
+                f"-{final_damage}",
+                (self.rect.x, self.rect.y - 15),
+                color=(255, 0, 0)
+            ))
 
         if self.health <= 0:
             self.die()
@@ -202,13 +230,15 @@ class Player:
         self.level += 1
         self.experience_to_next = int(self.experience_to_next * 1.25)
 
-        # Growth formulas (scales better than hardcoding)
+        # Growth formulas
         health_bonus = 10 + self.level * 5
         damage_bonus = 2 + self.level // 2
+        defense_bonus = 1 + self.level // 3  # Add defense growth per level
 
         self.max_health += health_bonus
         self.health = self.max_health
         self.damage += damage_bonus
+        self.base_defense += defense_bonus  # Increase base defense
 
         # Popup feedback
         global show_level_up, level_up_timer, level_up_text
@@ -216,7 +246,8 @@ class Player:
         level_up_timer = 0
         level_up_text = f"LEVEL UP! Level {self.level}"
 
-        print(f"⬆️ Level {self.level} | HP: {self.max_health} | DMG: {self.damage}")
+        print(f"⬆️ Level {self.level} | HP: {self.max_health} | Defense: {self.get_total_defense()}")
+
 
     # ------------------------
     # Combat Actions
@@ -242,7 +273,19 @@ class Player:
     def add_status_effect(self, name, duration, **kwargs):
         """Apply a buff/debuff (ex: poison, regen)."""
         self.status_effects[name] = {"duration": duration, "timer": 0, **kwargs}
-
+    def get_total_defense(self):
+        total_defense = self.base_defense
+    
+        # Add defense from all equipped armor pieces
+        for slot_name, equipped_item in equipment_slots.items():
+            if equipped_item and hasattr(equipped_item, 'defense'):
+                total_defense += equipped_item.defense
+    
+        # Add any temporary buffs
+        buff_bonus = sum(buff.get("defense", 0) for buff in self.status_effects.values())
+        total_defense += buff_bonus
+    
+        return total_defense
     def update_status_effects(self, dt):
         expired = []
         for effect, data in self.status_effects.items():
@@ -315,16 +358,6 @@ class Enemy:
             color=(255, 50, 50)
         ))
         return self.health <= 0
-
-    def can_attack(self, current_time):
-        return current_time - self.last_attack_time >= ENEMY_ATTACK_COOLDOWN
-
-    def attack_player(self, player_world_rect, current_time):
-        attack_range_rect = self.hitbox.inflate(ENEMY_ATTACK_RANGE, ENEMY_ATTACK_RANGE)
-        if self.can_attack(current_time) and attack_range_rect.colliderect(player_world_rect):
-            self.last_attack_time = current_time
-            return True
-        return False
 
     # ------------------------
     # AI + Movement
@@ -769,8 +802,14 @@ class Boss(Enemy):
     def take_damage(self, damage_amount):
         """Override to add boss-specific damage feedback."""
         old_health = self.health
-        result = super().take_damage(damage_amount)
-        
+        self.health -= damage_amount
+    
+        floating_texts.append(FloatingText(
+            f"-{damage_amount}",
+            (self.rect.x, self.rect.y - 15),
+            color=(255, 50, 50)
+        ))
+    
         # Boss-specific damage feedback
         if self.health > 0:
             # Show percentage of health remaining
@@ -781,7 +820,7 @@ class Boss(Enemy):
                 color=(255, 255, 100),
                 lifetime=800
             ))
-            
+        
             # Special reactions to taking damage
             if self.health < self.max_health * 0.5 and old_health >= self.max_health * 0.5:
                 floating_texts.append(FloatingText(
@@ -798,8 +837,9 @@ class Boss(Enemy):
                 color=(255, 215, 0),
                 lifetime=3000
             ))
-        
-        return result
+    
+        return self.health <= 0
+
 # --- GAME STATE GLOBALS ---
 player_pos = pygame.Rect(WIDTH // 2, HEIGHT // 2, PLAYER_SIZE, PLAYER_SIZE)
 player = Player()
@@ -807,7 +847,7 @@ map_offset_x = 0
 map_offset_y = 0
 current_level = "world"  # "world", "house", or "dungeon"
 current_house_index = None
-
+current_music = None
 # Player animation state
 last_direction = "down"
 current_direction = "idle"
@@ -869,7 +909,16 @@ miner_idle_direction = 1
 
 # Game objects
 inventory = [[None for _ in range(4)] for _ in range(4)]
-equipment_slots = {"weapon": None}
+equipment_slots = {
+    "weapon": None,
+    "helmet": None,
+    "armor": None,
+    "boots": None,
+    "ring1": None,
+    "ring2": None,
+    "amulet": None,
+    "shield": None,
+}
 tree_rects = []
 house_list = []
 stone_rects = []
@@ -943,6 +992,69 @@ def find_safe_spawn_position(avoid_rects, spawn_area_rect, entity_size=(PLAYER_S
     
     # If no safe position found, return center of spawn area
     return (spawn_area_rect.centerx - entity_size[0]//2, spawn_area_rect.centery - entity_size[1]//2)
+
+def init_music():
+    """Initialize pygame mixer for music playback."""
+    try:
+        pygame.mixer.pre_init(frequency=22050, size=-16, channels=2, buffer=512)
+        pygame.mixer.init()
+        music_volume = 0.5
+        pygame.mixer.music.set_volume(music_volume)
+        print("Music system initialized successfully")
+        return True
+    except pygame.error as e:
+        print(f"Could not initialize music system: {e}")
+        return False
+
+# Add this function to play background music
+def play_music(music_key, loop=True):
+    """Play background music for a specific game area."""
+    global current_music
+    
+    # Don't restart the same music
+    if current_music == music_key and pygame.mixer.music.get_busy():
+        return
+    
+    try:
+        # Stop current music
+        pygame.mixer.music.stop()
+        
+        # Load and play new music
+        if music_key in MUSIC_FILES:
+            pygame.mixer.music.load(MUSIC_FILES[music_key])
+            loops = -1 if loop else 0  # -1 means infinite loop
+            pygame.mixer.music.play(loops)
+            current_music = music_key
+            print(f"Playing music: {music_key}")
+        else:
+            print(f"Music key '{music_key}' not found")
+            current_music = None
+            
+    except pygame.error as e:
+        print(f"Could not play music '{music_key}': {e}")
+        current_music = None
+
+# Add this function to stop music
+def stop_music():
+    """Stop all background music."""
+    global current_music
+    pygame.mixer.music.stop()
+    current_music = None
+
+# Add this function to fade out music smoothly
+def fade_out_music(fade_time_ms=1000):
+    """Fade out current music over specified time."""
+    global current_music
+    pygame.mixer.music.fadeout(fade_time_ms)
+    current_music = None
+
+# Add this function to change volume
+def set_music_volume(volume):
+    """Set music volume (0.0 to 1.0)."""
+    global music_volume
+    music_volume = max(0.0, min(1.0, volume))
+    pygame.mixer.music.set_volume(music_volume)
+
 def draw_pause_menu(screen, assets):
     """Draw the in-game pause/options menu."""
     if not show_pause_menu:
@@ -1108,7 +1220,7 @@ def load_text_map(filename):
         'L': 'leaf',
         '@': 'player_spawn',
         '.': 'grass',  # empty space = grass
-        'B': 'boss1_portal'
+        'B': 'boss1_portal',
     }
     
     try:
@@ -1138,6 +1250,7 @@ def load_text_map(filename):
                                 'type': 'flower',
                                 'pos': (x + 10, y + 10, random.randint(0, 1))
                             })
+
                         elif char == 'L':
                             map_data['tiles'].append({
                                 'type': 'leaf',
@@ -1172,13 +1285,29 @@ def debug_boss_rendering():
 
 def draw_boss_room(screen, assets):
     """Draw the boss room including floor, walls, ore, portals, and enemies."""
+    # Draw black floor for boss room
+    screen.fill((20, 20, 20))  # Dark floor
     
-    # ... existing drawing code ...
+    # Draw boss room walls
+    for wall in boss_room_walls:
+        screen.blit(assets["dungeon_wall"], (wall.x - map_offset_x, wall.y - map_offset_y))
     
-    # Draw enemies using their actual sprites
+    # Draw ore deposits in boss room
+    for ore in stone_rects:
+        screen.blit(assets["ore_img"], (ore.x - map_offset_x, ore.y - map_offset_y))
+    
+    # Draw boss portal if it exists
+    if boss1_portal:
+        screen.blit(assets["boss1_portal"], (boss1_portal.x - map_offset_x, boss1_portal.y - map_offset_y))
+    
+    # Draw exit portal
+    if dungeon_exit:
+        screen.blit(assets["portal"], (dungeon_exit.x - map_offset_x, dungeon_exit.y - map_offset_y))
+    
+    # Draw enemies (including boss)
     for enemy in enemies:
         enemy_screen_rect = world_to_screen_rect(enemy.rect)
-        if 0 <= enemy_screen_rect.x <= WIDTH and 0 <= enemy_screen_rect.y <= HEIGHT:
+        if -100 <= enemy_screen_rect.x <= WIDTH + 100 and -100 <= enemy_screen_rect.y <= HEIGHT + 100:
             screen.blit(enemy.image, enemy_screen_rect)
             
             # Draw boss health bar at top of screen
@@ -1189,6 +1318,14 @@ def draw_boss_room(screen, assets):
             elif enemy.health < enemy.max_health:
                 bar_y = enemy_screen_rect.y - 15
                 draw_health_bar(screen, enemy_screen_rect.x, bar_y, enemy.health, enemy.max_health, enemy.rect.width, 8)
+
+    # Update and draw floating texts
+    for text in floating_texts[:]:
+        text.update()
+        if not text.is_alive():
+            floating_texts.remove(text)
+        else:
+            text.draw(screen, assets["small_font"], map_offset_x, map_offset_y)
 
     # ... rest of existing code ...
 def load_boss_room_map(boss_room):
@@ -1353,7 +1490,11 @@ def init():
     pygame.init()
     screen = pygame.display.set_mode((WIDTH, HEIGHT))
     pygame.display.set_caption("Not Pokemon - Enhanced")
-    return screen, pygame.time.Clock()
+    
+    # Initialize music system
+    init_music()
+    
+    return screen, pygame.time.Clock()  
 
 # --- LOAD ASSETS ---
 def load_player_frames():
@@ -1513,6 +1654,7 @@ def start_new_game():
     player.health = PLAYER_MAX_HEALTH
     player.max_health = PLAYER_MAX_HEALTH
     player.damage = PLAYER_BASE_DAMAGE
+    player.defense = PLAYER_BASE_DEFENSE
     player.experience = 0
     player.experience_to_next = 100
     
@@ -1719,9 +1861,9 @@ def load_assets():
     flower_item = Item("Flower", flower_images[0])
     potion_item = Item("Potion", potion_image)
     coin_item = Item("Coin", coin_image)
-    chest_item = Item("Chest Armor", chest_image, category="Armor", damage=0)
-    helmet_item = Item("Helmet", helmet_image, category="Helmet", damage=0)
-    boots_item = Item("Boots", boots_image, category="Boots", damage=0)
+    chest_item = Item("Chest Armor", chest_image, category="Armor", damage=0, defense=10)
+    helmet_item = Item("Helmet", helmet_image, category="Helmet", damage=0, defense=5)
+    boots_item = Item("Boots", boots_image, category="Boots", damage=0, defense=5)
     # --- Boss Door Frames ---
     boss_door_frames = load_boss_door_frames()
 
@@ -1964,11 +2106,11 @@ def generate_procedural_world():
     pass  # Replace with your existing code if needed
 def give_starting_items(assets):
     """Adds initial items to the inventory."""
-    add_item_to_inventory(assets["stone_item"])
-    add_item_to_inventory(assets["potion_item"])
-    add_item_to_inventory(assets["potion_item"])
-    add_item_to_inventory(assets["stone_item"])
+    for _ in range(20):
+        add_item_to_inventory(assets["stone_item"])
+    
     add_item_to_inventory(assets["axe_item"])
+    add_item_to_inventory(assets["pickaxe_item"])
 
 # COMPLETE BUG FIXES - Replace these functions in your code
 
@@ -2219,7 +2361,15 @@ def add_item_to_inventory(item_to_add):
     for row in range(4):
         for col in range(4):
             if inventory[row][col] is None:
-                new_item = Item(item_to_add.name, item_to_add.image, category=item_to_add.category, damage=item_to_add.damage)
+                # FIXED: Copy ALL attributes including defense
+                new_item = Item(
+                    item_to_add.name, 
+                    item_to_add.image, 
+                    count=1,
+                    category=item_to_add.category, 
+                    damage=item_to_add.damage,
+                    defense=item_to_add.defense  # This was missing!
+                )
                 inventory[row][col] = new_item
                 return True
     return False
@@ -2252,26 +2402,31 @@ def remove_item_from_inventory(item_name, quantity):
 
 def equip_item(item_to_equip):
     """Enhanced equip function that handles different equipment types."""
-    global equipment_slots  # Make sure we can access the global equipment_slots
+    global equipment_slots
     
     if not item_to_equip:
         return False
         
-    # Determine equipment slot based on item category/name
+    # FIXED: Updated slot mapping to match your actual item names
     slot_mapping = {
+        # Weapons
         "Weapon": "weapon",
         "Axe": "weapon", 
         "Pickaxe": "weapon",
         "Sword": "weapon",
-        # Future equipment types:
-        # "Helmet": "helmet",
-        # "Armor": "armor", 
-        # "Boots": "boots",
-        # "Ring": "ring1",  # Will need logic to choose ring1 vs ring2
-        # "Amulet": "amulet",
-        # "Shield": "shield"
+
+        # Armor - FIXED: Added "Chest Armor" mapping
+        "Helmet": "helmet",
+        "Chest Armor": "armor",  # This was missing!
+        "Armor": "armor",   # Keep as alias
+        "Boots": "boots",
+
+        # Accessories
+        "Ring": "ring1",
+        "Amulet": "amulet",
+        "Shield": "shield"
     }
-    
+
     # Find appropriate slot
     target_slot = None
     if hasattr(item_to_equip, 'category') and item_to_equip.category in slot_mapping:
@@ -2281,9 +2436,10 @@ def equip_item(item_to_equip):
     
     if not target_slot:
         print(f"Cannot equip {item_to_equip.name} - no suitable slot found")
+        print(f"Item category: {getattr(item_to_equip, 'category', 'None')}")  # Debug info
         return False
     
-    # Handle rings specially (choose empty ring slot)
+    # Handle rings specially
     if target_slot.startswith("ring"):
         if equipment_slots["ring1"] is None:
             target_slot = "ring1"
@@ -2303,7 +2459,9 @@ def equip_item(item_to_equip):
     # Equip the new item
     equipment_slots[target_slot] = item_to_equip
     print(f"{item_to_equip.name} equipped to {target_slot} slot!")
+    print(f"Defense value: {item_to_equip.defense}")  # Debug info
     return True
+
 def unequip_item_from_slot(slot_name):
     """Unequip item from a specific slot."""
     global equipment_slots  # Make sure we can access the global equipment_slots
@@ -2335,8 +2493,8 @@ def handle_inventory_click(mouse_pos):
                 item_to_equip = inventory[row][col]
                 if item_to_equip:
                     # Check if item can be equipped
-                    if (hasattr(item_to_equip, 'category') and item_to_equip.category == "Weapon") or \
-                       item_to_equip.name in ["Axe", "Pickaxe", "Sword"]:
+                    if (hasattr(item_to_equip, 'category') and item_to_equip.category in ["Weapon", "Armor"]) or \
+                       item_to_equip.name in ["Axe", "Pickaxe", "Sword", "Helmet", "Chest", "Boots"]:
                         if equip_item(item_to_equip):
                             inventory[row][col] = None  # Remove from inventory
                             print(f"Equipped {item_to_equip.name}")
@@ -2345,6 +2503,7 @@ def handle_inventory_click(mouse_pos):
                         print(f"{item_to_equip.name} cannot be equipped")
                 return True
     return False
+
 
 def handle_equipment_click(mouse_pos, slot_rects):
     """Handle clicking on equipment slots to unequip items."""
@@ -2415,11 +2574,13 @@ def draw_player_stats(screen, assets, player_frames, attack_frames, chopping_fra
     screen.blit(text_surf, (health_bar_x + 130, y_offset))
     y_offset += 25
     
-    # Level and damage info (also moved right)
+    # FIXED: Show damage and defense
     equipped_weapon = equipment_slots.get("weapon")
     total_damage = player.get_total_damage(equipped_weapon)
-    level_text = f"Level {player.level} - Damage: {total_damage}"
-    text_surf = assets["small_font"].render(level_text, True, (255, 255, 255))
+    total_defense = player.get_total_defense()
+    
+    stats_text = f"Level {player.level} | Damage: {total_damage} | Defense: {total_defense}"
+    text_surf = assets["small_font"].render(stats_text, True, (255, 255, 255))
     screen.blit(text_surf, (health_bar_x, y_offset))
 
 def draw_level_up_notification(screen, assets):
@@ -3143,22 +3304,22 @@ def draw_smithing_content(screen, assets, is_hovering, content_y):
     col1_x = CRAFTING_X + gap
     col2_x = CRAFTING_X + gap + button_width + gap
     
-    # Weapons (left column)
+    # Weapons (left column) - use logs
     axe_button_rect = pygame.Rect(col1_x, content_y + gap, button_width, button_height)
     req_logs_axe = 5
     
     pickaxe_button_rect = pygame.Rect(col1_x, content_y + gap + (button_height + gap), button_width, button_height)
     req_logs_pickaxe = 10
     
-    # Armor (right column)
+    # Armor (right column) - use stones with higher requirements
     helmet_button_rect = pygame.Rect(col2_x, content_y + gap, button_width, button_height)
-    req_stone_helmet = 8
+    req_stone_helmet = 8  # Increased from 2
     
     chest_button_rect = pygame.Rect(col2_x, content_y + gap + (button_height + gap), button_width, button_height)
-    req_stone_chest = 15
+    req_stone_chest = 15  # Increased from 2
     
     boots_button_rect = pygame.Rect(col2_x, content_y + gap + 2 * (button_height + gap), button_width, button_height)
-    req_stone_boots = 6
+    req_stone_boots = 6   # Increased from 2
     
     # Define all craftable items
     buttons = [
@@ -3233,113 +3394,92 @@ def draw_alchemy_content(screen, assets, is_hovering, content_y):
     pygame.draw.rect(screen, (150, 150, 150), potion_button_rect, 2)
     text_surface = assets["small_font"].render(text_to_display, True, (255, 255, 255))
     screen.blit(text_surface, text_surface.get_rect(center=potion_button_rect.center))
-
 def draw_equipment_panel(screen, assets):
     """Draws the expanded equipment GUI with 2 rows, 4 columns and stats display."""
-    global equipment_slots  # Make sure we can access the global equipment_slots
-    
-    panel_rect = pygame.Rect(EQUIPMENT_X, EQUIPMENT_Y, EQUIPMENT_PANEL_WIDTH, EQUIPMENT_PANEL_HEIGHT)
-    pygame.draw.rect(screen, (101, 67, 33), panel_rect)
-    pygame.draw.rect(screen, (255, 255, 255), panel_rect, 3)
-    
-    # Header
-    header_rect = pygame.Rect(EQUIPMENT_X, EQUIPMENT_Y, EQUIPMENT_PANEL_WIDTH, 40)
-    pygame.draw.rect(screen, (50, 33, 16), header_rect)
-    header_text = assets["font"].render("Equipment", True, (255, 255, 255))
-    screen.blit(header_text, header_text.get_rect(centerx=header_rect.centerx, top=EQUIPMENT_Y + 8))
+    global equipment_slots  # Access global equipment slots
 
-    # Equipment slot layout
+    # --- Panel background ---
+    panel_rect = pygame.Rect(EQUIPMENT_X, EQUIPMENT_Y, EQUIPMENT_PANEL_WIDTH + 100, EQUIPMENT_PANEL_HEIGHT + 40)
+    pygame.draw.rect(screen, (101, 67, 33), panel_rect)          # Dark wood background
+    pygame.draw.rect(screen, (255, 255, 255), panel_rect, 3)     # White outline
+
+    # --- Header ---
+    header_rect = pygame.Rect(EQUIPMENT_X, EQUIPMENT_Y, panel_rect.width, 40)
+    pygame.draw.rect(screen, (50, 33, 16), header_rect)
+    header_text = assets["font"].render("Equipment", True, (255, 215, 0))  # Gold text
+    screen.blit(header_text, header_text.get_rect(center=header_rect.center))
+
+    # --- Equipment slot layout ---
     slot_names = [
-        ["weapon", "helmet", "armor", "boots"],      # Top row
-        ["ring1", "ring2", "amulet", "shield"]       # Bottom row
+        ["weapon", "helmet", "armor", "boots"],   # Top row
+        ["ring1", "ring2", "amulet", "shield"]    # Bottom row
     ]
-    
+
     slot_labels = {
-        "weapon": "Weapon", "helmet": "Helmet", "armor": "Armor", "boots": "Boots",
+        "weapon": "Weapon", "helmet": "Helmet", "armor": "Chest", "boots": "Boots",
         "ring1": "Ring", "ring2": "Ring", "amulet": "Amulet", "shield": "Shield"
     }
 
-    # Draw equipment slots
-    slot_rects = {}  # Store for click handling
-    start_y = EQUIPMENT_Y + 50
-    
+    slot_rects = {}
+    start_y = EQUIPMENT_Y + 60
+
     for row in range(EQUIPMENT_ROWS):
         for col in range(EQUIPMENT_COLS):
-            slot_x = EQUIPMENT_X + EQUIPMENT_GAP + col * (EQUIPMENT_SLOT_SIZE + EQUIPMENT_GAP)
-            slot_y = start_y + row * (EQUIPMENT_SLOT_SIZE + EQUIPMENT_GAP + 20)  # +20 for labels
-            
+            slot_x = EQUIPMENT_X + EQUIPMENT_GAP + col * (EQUIPMENT_SLOT_SIZE + EQUIPMENT_GAP + 20)
+            slot_y = start_y + row * (EQUIPMENT_SLOT_SIZE + EQUIPMENT_GAP + 28)
+
             slot_rect = pygame.Rect(slot_x, slot_y, EQUIPMENT_SLOT_SIZE, EQUIPMENT_SLOT_SIZE)
             slot_name = slot_names[row][col]
-            
+
             # Slot background
-            pygame.draw.rect(screen, (70, 70, 70), slot_rect)
-            pygame.draw.rect(screen, (150, 150, 150), slot_rect, 2)
-            
-            # Draw equipped item if any
+            pygame.draw.rect(screen, (60, 60, 60), slot_rect)       # Dark slot bg
+            pygame.draw.rect(screen, (200, 200, 200), slot_rect, 2) # Silver outline
+
+            # Draw equipped item
             equipped_item = equipment_slots.get(slot_name)
             if equipped_item and equipped_item.image:
                 item_image = pygame.transform.scale(equipped_item.image, (EQUIPMENT_SLOT_SIZE, EQUIPMENT_SLOT_SIZE))
                 screen.blit(item_image, slot_rect)
-            
+
             # Slot label
             label_text = assets["small_font"].render(slot_labels[slot_name], True, (255, 255, 255))
-            label_rect = label_text.get_rect(centerx=slot_rect.centerx, top=slot_rect.bottom + 2)
+            label_rect = label_text.get_rect(centerx=slot_rect.centerx, top=slot_rect.bottom + 4)
             screen.blit(label_text, label_rect)
-            
-            # Store rect for click detection
+
+            # Store for click handling
             slot_rects[slot_name] = slot_rect
 
-    # Stats display in the middle
-    stats_y = start_y + (2 * (EQUIPMENT_SLOT_SIZE + EQUIPMENT_GAP + 20)) + 10
-    stats_rect = pygame.Rect(EQUIPMENT_X + 10, stats_y, EQUIPMENT_PANEL_WIDTH - 20, 40)
-    pygame.draw.rect(screen, (40, 40, 40), stats_rect)
-    pygame.draw.rect(screen, (150, 150, 150), stats_rect, 1)
-    
-    # Calculate total equipment bonuses
-    total_damage_bonus = 0
-    total_defense_bonus = 0  # Future feature
-    
-    for item in equipment_slots.values():
-        if item:
-            total_damage_bonus += getattr(item, 'damage', 0)
-            # total_defense_bonus += getattr(item, 'defense', 0)  # Future feature
-    
-    # Display stats
-    equipped_weapon = equipment_slots.get("weapon")
-    weapon_name = equipped_weapon.name if equipped_weapon else "None"
-    
-    stats_text = f"Weapon: {weapon_name} | Damage Bonus: +{total_damage_bonus}"
-    stats_surf = assets["small_font"].render(stats_text, True, (255, 255, 255))
-    stats_text_rect = stats_surf.get_rect(center=stats_rect.center)
-    screen.blit(stats_surf, stats_text_rect)
-    
-    return slot_rects  # Return for click handling
+    # --- Stats box ---
+    stats_y = start_y + (EQUIPMENT_ROWS * (EQUIPMENT_SLOT_SIZE + EQUIPMENT_GAP + 28)) + 10
+    stats_rect = pygame.Rect(EQUIPMENT_X + 10, stats_y, panel_rect.width - 20, 60)
+    pygame.draw.rect(screen, (30, 30, 30), stats_rect)      # Dark gray
+    pygame.draw.rect(screen, (180, 180, 180), stats_rect, 2)
 
-    # Stats display in the middle
-    stats_y = start_y + (2 * (EQUIPMENT_SLOT_SIZE + EQUIPMENT_GAP + 20)) + 10
-    stats_rect = pygame.Rect(EQUIPMENT_X + 10, stats_y, EQUIPMENT_PANEL_WIDTH - 20, 40)
-    pygame.draw.rect(screen, (40, 40, 40), stats_rect)
-    pygame.draw.rect(screen, (150, 150, 150), stats_rect, 1)
-    
-    # Calculate total equipment bonuses
+    # --- Calculate equipment bonuses ---
     total_damage_bonus = 0
-    total_defense_bonus = 0  # Future feature
-    
+    total_defense_bonus = 0
+
     for item in equipment_slots.values():
         if item:
             total_damage_bonus += getattr(item, 'damage', 0)
-            # total_defense_bonus += getattr(item, 'defense', 0)  # Future feature
+            total_defense_bonus += getattr(item, 'defense', 0)
     
-    # Display stats
+    player_total_defense = player.get_total_defense()
     equipped_weapon = equipment_slots.get("weapon")
     weapon_name = equipped_weapon.name if equipped_weapon else "None"
-    
-    stats_text = f"Weapon: {weapon_name} | Damage Bonus: +{total_damage_bonus}"
-    stats_surf = assets["small_font"].render(stats_text, True, (255, 255, 255))
-    stats_text_rect = stats_surf.get_rect(center=stats_rect.center)
-    screen.blit(stats_surf, stats_text_rect)
-    
-    return slot_rects  # Return for click handling
+    # --- Render stats text (multi-line) ---
+    stats_lines = [
+        f"Main Hand: {weapon_name} | Damage Bonus: +{total_damage_bonus}",
+        f"Defense: {player_total_defense} (+{total_defense_bonus} from equipment)"
+    ]
+
+    line_height = assets["small_font"].get_height() + 2
+    for i, line in enumerate(stats_lines):
+        text_surf = assets["small_font"].render(line, True, (255, 255, 255))
+        text_rect = text_surf.get_rect(midleft=(stats_rect.left + 10, stats_rect.top + 10 + i * line_height))
+        screen.blit(text_surf, text_rect)
+
+    return slot_rects
 
 def draw_hud(screen, assets):
     """Draws the main HUD elements (icons)."""
@@ -3484,13 +3624,16 @@ def use_potion():
 def handle_main_menu_events(screen, assets, dt):
     global game_state, menu_selected_option
     
+    # menu music
+    play_music("main_menu")
+
     # Get mouse position for hover detection
     mouse_pos = pygame.mouse.get_pos()
     
     # Define menu option rectangles (you'll need these for click detection)
     menu_options = ["New Game", "Load Game", "Exit"]
     option_rects = []
-    
+
     for i, option in enumerate(menu_options):
         option_text = assets["font"].render(option, True, (255, 255, 255))
         option_rect = option_text.get_rect(center=(WIDTH // 2, HEIGHT // 2 + i * 50))
@@ -3683,6 +3826,17 @@ def handle_playing_state(screen, assets, dt):
             show_level_up = False
             level_up_timer = 0
 
+    # music
+    if current_level == "world":
+        play_music("forest")
+    elif current_level == "dungeon":
+        play_music("dungeon") 
+    elif current_level == "boss_room":
+        play_music("boss_room")
+    elif current_level == "house":
+        # Optional: fade out music for indoor ambiance
+        if current_music not in ["forest", None]:
+            fade_out_music(2000)  # 2 second fade
     # UI Hover State
     is_hovering = None
     mouse_pos = pygame.mouse.get_pos()
@@ -3701,7 +3855,7 @@ def handle_playing_state(screen, assets, dt):
         elif crafting_tab == "alchemy":
             if potion_button_rect and potion_button_rect.collidepoint(mouse_pos):
                 is_hovering = "potion"
-
+    
     # Enemy spawning and updates in dungeon
     if current_level == "dungeon":
         # Spawn enemies more aggressively at start
