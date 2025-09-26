@@ -1,9 +1,4 @@
-﻿### boss room floor is black, kind of like that
-# respawn after  boss death is in dungeon
-
-
-
-## -*- coding: utf-8 -*-
+﻿## -*- coding: utf-8 -*-
 import os
 import random
 import sys
@@ -57,10 +52,10 @@ CRAFTING_Y = (HEIGHT - CRAFTING_PANEL_HEIGHT) // 2
 
 # Equipment GUI constants
 EQUIPMENT_SLOT_SIZE = 40
-EQUIPMENT_GAP = 15
+EQUIPMENT_GAP = 20
 EQUIPMENT_ROWS = 2
 EQUIPMENT_COLS = 4
-EQUIPMENT_PANEL_WIDTH = 4 * EQUIPMENT_SLOT_SIZE + 5 * EQUIPMENT_GAP + 20
+EQUIPMENT_PANEL_WIDTH = 4 * EQUIPMENT_SLOT_SIZE + 4 * EQUIPMENT_GAP + 20
 EQUIPMENT_PANEL_HEIGHT = 2 * EQUIPMENT_SLOT_SIZE + 4 * EQUIPMENT_GAP + 100  # Extra space for stats
 EQUIPMENT_X = (WIDTH - EQUIPMENT_PANEL_WIDTH) // 2
 EQUIPMENT_Y = (HEIGHT - EQUIPMENT_PANEL_HEIGHT) // 2
@@ -69,7 +64,9 @@ EQUIPMENT_Y = (HEIGHT - EQUIPMENT_PANEL_HEIGHT) // 2
 DUNGEON_SIZE = 30
 DUNGEON_SPAWN_X = 5 * TILE_SIZE
 DUNGEON_SPAWN_Y = 5 * TILE_SIZE
-
+player_movement_history = []
+is_dashing = False
+dash_cooldown = 0
 # Music constants
 MUSIC_FILES = {
     "main_menu": "main.mp3",       # points to main.mp3
@@ -515,34 +512,7 @@ class Boss(Enemy):
                 self.charge_cooldown = 6000  # More frequent charges
                 print(f"{self.name} enters Phase 3 - Enraged!")
 
-    def use_special_ability(self, current_time, player):
-        """Boss special attacks that vary by phase."""
-        if current_time - self.last_special_ability < self.special_ability_cooldown:
-            return False
-
-        distance_to_player = math.hypot(
-            player.rect.centerx - self.rect.centerx,
-            player.rect.centery - self.rect.centery
-        )
-
-        if distance_to_player > self.attack_range * 2:
-            return False  # Too far away
-
-        self.last_special_ability = current_time
-        
-        if self.phase == 1:
-            # Phase 1: Basic slam attack
-            self._slam_attack(player, current_time)
-            
-        elif self.phase == 2:
-            # Phase 2: AOE shockwave
-            self._shockwave_attack(player, current_time)
-            
-        elif self.phase == 3:
-            # Phase 3: Multi-hit combo
-            self._combo_attack(player, current_time)
-            
-        return True
+    
 
     def _slam_attack(self, player, current_time):
         """Basic slam attack - high damage, single target."""
@@ -1187,18 +1157,53 @@ def execute_pause_menu_option(assets):
         pygame.quit()
         sys.exit()
 def find_nearest_enemy(player_world_rect):
-    """Find the nearest enemy within attack range."""
+    """Find enemies in the direction the player was moving."""
+    attack_range = COMBAT_RANGE * 1.5  # Longer range
     nearest_enemy = None
     min_distance = float('inf')
     
+    # Get attack direction from recent movement
+    attack_direction = "down"  # default
+    if player_movement_history:
+        attack_direction = player_movement_history[-1][0]
+    
+    # Direction vectors
+    direction_map = {
+        "up": (0, -1),
+        "down": (0, 1),
+        "left": (-1, 0),
+        "right": (1, 0)
+    }
+    
+    if attack_direction not in direction_map:
+        attack_direction = "down"
+    
+    dx, dy = direction_map[attack_direction]
+    
     for enemy in enemies:
-        distance = math.sqrt((enemy.rect.centerx - player_world_rect.centerx) ** 2 + 
-                           (enemy.rect.centery - player_world_rect.centery) ** 2)
-        if distance <= COMBAT_RANGE and distance < min_distance:
-            nearest_enemy = enemy
-            min_distance = distance
+        # Get distance and direction to enemy
+        to_enemy_x = enemy.rect.centerx - player_world_rect.centerx
+        to_enemy_y = enemy.rect.centery - player_world_rect.centery
+        distance = math.sqrt(to_enemy_x**2 + to_enemy_y**2)
+        
+        if distance > attack_range:
+            continue
+            
+        # Check if enemy is in the attack direction
+        if distance > 0:
+            to_enemy_x /= distance
+            to_enemy_y /= distance
+            
+            # Check if enemy is in attack direction (dot product)
+            direction_match = (dx * to_enemy_x) + (dy * to_enemy_y)
+            
+            # Enemy must be somewhat in attack direction
+            if direction_match > 0.3 and distance < min_distance:
+                nearest_enemy = enemy
+                min_distance = distance
     
     return nearest_enemy
+
 def load_text_map(filename):
     """Load a map from a text file."""
     map_data = {
@@ -1704,27 +1709,49 @@ def load_chopping_frames():
     return chopping_frames
 
 def load_attack_frames():
-    """Loads and scales the attack animation frames."""
+    """Loads attack frames from Player_action.png sheet."""
     try:
-        sheet = pygame.image.load("Player.PNG").convert_alpha()
-        attack_frames = {}
-        # Attack animations are typically in a specific row - you'll need to adjust these coordinates
-        # Based on your sprite sheet layout, find the attack animation rows
-        attack_frames["right"] = [pygame.transform.scale(sheet.subsurface(pygame.Rect(col * 32, 160, 32, 32)), (PLAYER_SIZE, PLAYER_SIZE)) for col in range(4)]
-        attack_frames["left"] = [pygame.transform.flip(frame, True, False) for frame in attack_frames["right"]]
-        attack_frames["up"] = [pygame.transform.scale(sheet.subsurface(pygame.Rect(col * 32, 128, 32, 32)), (PLAYER_SIZE, PLAYER_SIZE)) for col in range(4)]
-        attack_frames["down"] = [pygame.transform.scale(sheet.subsurface(pygame.Rect(col * 32, 192, 32, 32)), (PLAYER_SIZE, PLAYER_SIZE)) for col in range(4)]
-    except:
-        # Fallback attack frames
-        fallback_frame = pygame.Surface((PLAYER_SIZE, PLAYER_SIZE))
-        fallback_frame.fill((255, 100, 100))  # Red tint for attack
+        sheet = pygame.image.load("Player_action.png").convert_alpha()
+        cell_size = 32
+        attack_frames = {"down": [], "right": [], "left": [], "up": []}
+
+        # --- Down attack (row 0, col 1) ---
+        rect = pygame.Rect(1 * cell_size, 0 * cell_size, cell_size, cell_size)
+        down = sheet.subsurface(rect)
+        attack_frames["down"].append(pygame.transform.scale(down, (PLAYER_SIZE, PLAYER_SIZE)))
+
+        # --- Right attack (row 1, col 1) ---
+        rect = pygame.Rect(1 * cell_size, 1 * cell_size, cell_size, cell_size)
+        right = sheet.subsurface(rect)
+        right_scaled = pygame.transform.scale(right, (PLAYER_SIZE, PLAYER_SIZE))
+        left_scaled = pygame.transform.flip(right_scaled, True, False)
+        attack_frames["right"].append(right_scaled)
+        attack_frames["left"].append(left_scaled)
+
+        # --- Up attack (row 2, col 1) ---
+        rect = pygame.Rect(1 * cell_size, 2 * cell_size, cell_size, cell_size)
+        up = sheet.subsurface(rect)
+        attack_frames["up"].append(pygame.transform.scale(up, (PLAYER_SIZE, PLAYER_SIZE)))
+
+        # Pad each with duplicates so you can animate smoother
+        for key in attack_frames:
+            attack_frames[key] = attack_frames[key] * 4  # repeat to make 4 frames
+
+    except Exception as e:
+        print("Error loading attack frames:", e)
+        fallback = pygame.Surface((PLAYER_SIZE, PLAYER_SIZE))
+        fallback.fill((255, 0, 0))
         attack_frames = {
-            "right": [fallback_frame],
-            "left": [fallback_frame],
-            "up": [fallback_frame],
-            "down": [fallback_frame]
+            "down": [fallback] * 4,
+            "right": [fallback] * 4,
+            "left": [fallback] * 4,
+            "up": [fallback] * 4
         }
+
     return attack_frames
+
+
+
 
 def load_enemy_frames():
     """Loads and scales enemy frames."""
@@ -2552,7 +2579,10 @@ def draw_player_stats(screen, assets, player_frames, attack_frames, chopping_fra
     
     # Get current player frame
     if is_attacking:
-        current_frame = attack_frames[last_direction][player_frame_index]
+        frames = attack_frames[last_direction]
+        frame_index = player_frame_index % len(frames)
+        current_frame = frames[frame_index]
+
     elif is_chopping or is_mining:
         current_frame = chopping_frames[last_direction][player_frame_index]
     else:
@@ -3496,38 +3526,57 @@ def draw_hud(screen, assets):
         screen.blit(label_text, label_rect)
 
 def draw_ability_bar(screen, assets):
-    """Draws a centered ability bar that can be expanded for multiple abilities."""
+    """Enhanced ability bar with better visuals and more abilities."""
     current_time = pygame.time.get_ticks()
     
-    # Ability bar configuration
+    # Define abilities
     abilities = [
         {
             'key': '1',
             'name': 'Attack',
-            'available': player.can_attack(current_time),
-            'cooldown_remaining': max(0, COMBAT_COOLDOWN - (current_time - player.last_attack_time)) if not player.can_attack(current_time) else 0
+            'color': (200, 50, 50),
+            'available': player.can_attack(current_time) and not is_attacking,
+            'cooldown': max(0, COMBAT_COOLDOWN - (current_time - player.last_attack_time)) if not player.can_attack(current_time) else 0
+        },
+        {
+            'key': '2', 
+            'name': 'Block',
+            'color': (50, 50, 200),
+            'available': not is_attacking,
+            'cooldown': 0
+        },
+        {
+            'key': '3',
+            'name': 'Dash',
+            'color': (50, 200, 200),
+            'available': (current_time - dash_cooldown > 3000) and not is_attacking,
+            'cooldown': max(0, 3000 - (current_time - dash_cooldown)) if current_time - dash_cooldown <= 3000 else 0
+        },
+        {
+            'key': 'H',
+            'name': 'Heal',
+            'color': (50, 200, 50),
+            'available': get_item_count("Potion") > 0,
+            'cooldown': 0
         }
-        # Future abilities can be added here like:
-        # {'key': '2', 'name': 'Heal', 'available': True, 'cooldown_remaining': 0}
-        # {'key': '3', 'name': 'Dash', 'available': True, 'cooldown_remaining': 0}
     ]
     
-    # Bar dimensions
-    button_size = 40  # Smaller than before
-    button_gap = 10
+    # Bar setup - bigger buttons
+    button_size = 50
+    button_gap = 12
     bar_width = len(abilities) * button_size + (len(abilities) - 1) * button_gap
-    bar_height = button_size + 20  # Extra height for labels
+    bar_height = button_size + 25
     
-    # Center the bar horizontally, place near bottom
+    # Position at bottom center
     bar_x = (WIDTH - bar_width) // 2
-    bar_y = HEIGHT - bar_height - 60
+    bar_y = HEIGHT - bar_height - 80
     
-    # Background panel (optional, looks nice)
-    panel_rect = pygame.Rect(bar_x - 10, bar_y - 10, bar_width + 20, bar_height + 20)
-    pygame.draw.rect(screen, (40, 40, 40, 180), panel_rect)
+    # Background panel
+    panel_rect = pygame.Rect(bar_x - 15, bar_y - 15, bar_width + 30, bar_height + 30)
+    pygame.draw.rect(screen, (30, 30, 40), panel_rect)
     pygame.draw.rect(screen, (255, 255, 255), panel_rect, 2)
     
-    # Draw each ability button
+    # Draw ability buttons
     for i, ability in enumerate(abilities):
         button_x = bar_x + i * (button_size + button_gap)
         button_y = bar_y
@@ -3535,51 +3584,151 @@ def draw_ability_bar(screen, assets):
         
         # Button color based on availability
         if ability['available']:
-            button_color = (0, 120, 0)  # Green when ready
+            button_color = ability['color']
             text_color = (255, 255, 255)
             display_text = ability['key']
         else:
-            button_color = (80, 80, 80)  # Gray when on cooldown
-            text_color = (200, 200, 200)
-            cooldown_seconds = ability['cooldown_remaining'] / 1000.0
-            display_text = f"{cooldown_seconds:.1f}"
+            button_color = (60, 60, 60)
+            text_color = (150, 150, 150)
+            if ability['cooldown'] > 0:
+                cooldown_seconds = ability['cooldown'] / 1000.0
+                display_text = f"{cooldown_seconds:.1f}"
+            else:
+                display_text = ability['key']
         
         # Draw button
         pygame.draw.rect(screen, button_color, button_rect)
-        pygame.draw.rect(screen, (255, 255, 255), button_rect, 2)
+        pygame.draw.rect(screen, (200, 200, 200), button_rect, 2)
         
-        # Draw key/cooldown text
-        text_surf = assets["small_font"].render(display_text, True, text_color)
+        # Cooldown overlay
+        if ability['cooldown'] > 0:
+            if ability['name'] == 'Attack':
+                cooldown_ratio = ability['cooldown'] / COMBAT_COOLDOWN
+            elif ability['name'] == 'Dash':
+                cooldown_ratio = ability['cooldown'] / 3000
+            else:
+                cooldown_ratio = 0
+                
+            overlay_height = int(button_size * cooldown_ratio)
+            if overlay_height > 0:
+                overlay_rect = pygame.Rect(button_x, button_y + (button_size - overlay_height), 
+                                         button_size, overlay_height)
+                overlay = pygame.Surface((button_size, overlay_height))
+                overlay.set_alpha(120)
+                overlay.fill((0, 0, 0))
+                screen.blit(overlay, overlay_rect)
+        
+        # Button text
+        text_surf = assets["font"].render(display_text, True, text_color)
         text_rect = text_surf.get_rect(center=button_rect.center)
         screen.blit(text_surf, text_rect)
         
-        # Draw ability name below button
-        name_surf = assets["small_font"].render(ability['name'], True, (255, 255, 255))
-        name_rect = name_surf.get_rect(centerx=button_rect.centerx, top=button_rect.bottom + 2)
+        # Ability name
+        name_surf = assets["small_font"].render(ability['name'], True, (200, 200, 200))
+        name_rect = name_surf.get_rect(centerx=button_rect.centerx, top=button_rect.bottom + 3)
         screen.blit(name_surf, name_rect)
+        
+        # Show potion count for heal
+        if ability['name'] == 'Heal':
+            potion_count = get_item_count("Potion")
+            if potion_count > 0:
+                count_surf = assets["small_font"].render(str(potion_count), True, (255, 255, 0))
+                count_rect = count_surf.get_rect(bottomright=(button_rect.right - 2, button_rect.bottom - 2))
+                screen.blit(count_surf, count_rect)
 # --- MAIN GAME LOGIC ---
 def handle_movement(keys):
-    """Handles player movement input and updates direction."""
-    global current_direction, last_direction
+    """Enhanced movement that tracks direction for better combat."""
+    global current_direction, last_direction, player_movement_history
+    
     dx = dy = 0
+    new_direction = None
+    
     if keys[pygame.K_a]:
         dx -= PLAYER_SPEED
-        current_direction = "left"
+        new_direction = "left"
     if keys[pygame.K_d]:
         dx += PLAYER_SPEED
-        current_direction = "right"
+        new_direction = "right"
     if keys[pygame.K_w]:
         dy -= PLAYER_SPEED
-        current_direction = "up"
+        new_direction = "up"
     if keys[pygame.K_s]:
         dy += PLAYER_SPEED
-        current_direction = "down"
-    if dx == 0 and dy == 0:
-        current_direction = "idle"
+        new_direction = "down"
+    
+    # Update directions and track movement
+    if new_direction:
+        current_direction = new_direction
+        last_direction = new_direction
+        
+        # Track recent movement for better attacks
+        current_time = pygame.time.get_ticks()
+        player_movement_history.append((new_direction, current_time))
+        
+        # Keep only recent movement (last 500ms)
+        player_movement_history = [
+            (direction, timestamp) for direction, timestamp in player_movement_history 
+            if current_time - timestamp < 500
+        ]
     else:
-        last_direction = current_direction
+        current_direction = "idle"
+    
     return dx, dy
 
+def handle_dash(current_time):
+    """Simple dash ability"""
+    global dash_cooldown, is_dashing, map_offset_x, map_offset_y
+    
+    if current_time - dash_cooldown < 3000:  # 3 second cooldown
+        return False
+    
+    if is_attacking:
+        return False
+    
+    # Get dash direction
+    dash_direction = "down"  # default
+    if player_movement_history:
+        dash_direction = player_movement_history[-1][0]
+    
+    # Dash distance
+    dash_amount = 80
+    
+    # Apply dash movement
+    if dash_direction == "up":
+        map_offset_y -= dash_amount
+    elif dash_direction == "down":
+        map_offset_y += dash_amount
+    elif dash_direction == "left":
+        map_offset_x -= dash_amount
+    elif dash_direction == "right":
+        map_offset_x += dash_amount
+    
+    dash_cooldown = current_time
+    
+    # Visual feedback
+    floating_texts.append(FloatingText(
+        "Dash!",
+        (player_pos.x, player_pos.y - 20),
+        color=(100, 255, 255),
+        lifetime=500
+    ))
+    
+    print(f"Dashed {dash_direction}!")
+    return True
+
+def handle_block():
+    """Simple block that adds defense"""
+    # Add temporary defense boost
+    player.add_status_effect("block", 1000, defense=15)
+    
+    floating_texts.append(FloatingText(
+        "Block!",
+        (player_pos.x, player_pos.y - 20),
+        color=(100, 100, 255),
+        lifetime=500
+    ))
+    
+    print("Blocking! +15 Defense for 1 second")
 
 def handle_collision(new_world_rect):
     """Checks for collision with world objects depending on current level."""
@@ -3806,14 +3955,17 @@ def handle_playing_state(screen, assets, dt):
         give_starting_items(assets)
         load_map("forest")
     
-    # Get frames
+    # Get framesd
     player_frames = handle_playing_state.player_frames
     chopping_frames = handle_playing_state.chopping_frames
     attack_frames = handle_playing_state.attack_frames
     enemy_frames = handle_playing_state.enemy_frames
     
     # Attack animation variables
-    attack_animation_duration = 600
+    attack_animation_duration = 400
+    attack_duration = 400
+    if attack_timer >= attack_duration:
+        attack_duration = 250
     current_time = pygame.time.get_ticks()
 
     # Update player
@@ -3893,27 +4045,50 @@ def handle_playing_state(screen, assets, dt):
             handle_boss_room_interactions(event, player_pos, assets)
         
         if event.type == pygame.KEYDOWN:
+
             # Combat controls
-            if event.key == pygame.K_1:
-                if player.can_attack(current_time):
+            if event.key == pygame.K_1 or event.key == pygame.K_SPACE:
+                if player.can_attack(current_time) and not is_attacking:
                     is_attacking = True
                     attack_timer = 0
-    
+
+                    # Player world rect
                     player_world_rect = get_player_world_rect()
-                    target_enemy = find_nearest_enemy(player_world_rect)
-                    if target_enemy:
-                        equipped_weapon = equipment_slots.get("weapon")
-                        player_damage = player.get_total_damage(equipped_weapon)
-                        if target_enemy.take_damage(player_damage):
-                            player.gain_experience(target_enemy.experience_reward)
-                            enemies.remove(target_enemy)
-                            print(f"Defeated {target_enemy.type}! Gained {target_enemy.experience_reward} XP")
-        
-                        player.last_attack_time = current_time
-                        print(f"Player attacks for {player_damage} damage!")
-                    else:
-                        player.last_attack_time = current_time
-                        print("Attack!")
+
+                    # Attack area (expand around the player by some pixels)
+                    ATTACK_RANGE = 48  # adjust size to feel right
+                    attack_box = player_world_rect.inflate(ATTACK_RANGE, ATTACK_RANGE)
+
+                    equipped_weapon = equipment_slots.get("weapon")
+                    base_damage = player.get_total_damage(equipped_weapon)
+
+                    # Flag to check if we hit something
+                    hit_any = False
+
+                    for enemy in enemies[:]:  # copy since we may remove enemies
+                        if attack_box.colliderect(enemy.rect):
+                            hit_any = True
+                            final_damage = base_damage
+
+                            if enemy.take_damage(final_damage):
+                                player.gain_experience(enemy.experience_reward)
+                                enemies.remove(enemy)
+                                print(f"Defeated {enemy.type}! Gained {enemy.experience_reward} XP")
+
+                            print(f"Hit {enemy.type} for {final_damage} dmg!")
+
+                    if not hit_any:
+                        print("Attack missed!")
+
+                    # Set cooldown
+                    player.last_attack_time = current_time
+
+            
+            # New ability keys
+            elif event.key == pygame.K_2:
+                handle_block()
+            elif event.key == pygame.K_3:
+                handle_dash(current_time)
             
             # Use potion
             if event.key == pygame.K_h:
