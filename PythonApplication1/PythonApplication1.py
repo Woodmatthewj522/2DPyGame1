@@ -310,28 +310,24 @@ class Player:
         
 class Enemy:
     def __init__(self, x, y, enemy_type="orc", frames=None, enemy_frames=None):
-        # Animation frames for this enemy type (list of Surfaces)
-        # Prefer passed frames, then global enemy_frames, then fallback.
+        # Animation frames (prefer passed frames, then global)
         if frames is None and 'enemy_frames' in globals():
             frames = enemy_frames
         self.frames = (frames.get(enemy_type, []) if frames else [])
 
-        # Choose a visible image: first animation frame or fallback colored surface
+        # Visible sprite
         if self.frames:
-            # use first frame as initial image
             self.image = self.frames[0].copy()
-            # ensure rect matches the image size
             self.rect = self.image.get_rect(topleft=(x, y))
         else:
-            # fallback square so enemy is visible
             self.image = pygame.Surface((PLAYER_SIZE, PLAYER_SIZE), pygame.SRCALPHA)
             self.image.fill((180, 60, 60))
             self.rect = self.image.get_rect(topleft=(x, y))
 
-        # Smaller hitbox for fair collisions
+        # Smaller hitbox for collisions
         self.hitbox = self.rect.inflate(-PLAYER_SIZE // 3, -PLAYER_SIZE // 3)
 
-        # Enemy type stats (unchanged)
+        # Stats
         self.type = enemy_type
         if enemy_type == "orc":
             self.health = 50
@@ -345,33 +341,82 @@ class Enemy:
         self.max_health = self.health
         self.speed = ENEMY_SPEED
         self.last_attack_time = 0
-        self.state = "idle"  # idle, chasing, attacking
+        self.state = "idle"   # idle, chasing, attacking
         self.target = None
 
         # XP reward scales with player level
         self.experience_reward = base_xp + (player.level * 5)
 
-        # Animation control
+        # Animation
         self.frame_index = 0
         self.frame_timer = 0
         self.frame_delay = 200
 
-        # Idle movement
+        # Idle wandering
         self.path_timer = 0
-        self.random_direction = random.choice([(1, 0), (-1, 0), (0, 1), (0, -1), (0, 0)])
-
+        self.random_direction = random.choice(
+            [(1, 0), (-1, 0), (0, 1), (0, -1), (0, 0)]
+        )
 
     # ------------------------
-    # Core Combat
+    # Combat
     # ------------------------
     def take_damage(self, damage_amount):
-        self.health -= damage_amount
-        floating_texts.append(FloatingText(
-            f"-{damage_amount}",
-            (self.rect.x, self.rect.y - 15),
-            color=(255, 50, 50)
-        ))
-        return self.health <= 0
+            """Override to add boss-specific damage feedback."""
+            old_health = self.health
+            self.health -= damage_amount
+
+            floating_texts.append(FloatingText(
+                f"-{damage_amount}",
+                (self.rect.x, self.rect.y - 15),
+                color=(255, 50, 50)
+            ))
+
+            # Boss-specific damage feedback
+            if self.health > 0:
+                # Show percentage of health remaining
+                health_percent = int((self.health / self.max_health) * 100)
+                floating_texts.append(FloatingText(
+                    f"{health_percent}%",
+                    (self.rect.centerx + 30, self.rect.y - 10),
+                    color=(255, 255, 100),
+                    lifetime=800
+                ))
+
+                # Special reactions to taking damage
+                if self.health < self.max_health * 0.5 and old_health >= self.max_health * 0.5:
+                    floating_texts.append(FloatingText(
+                        "You will pay for that!",
+                        (self.rect.centerx, self.rect.y - 60),
+                        color=(255, 100, 100),
+                        lifetime=2000
+                    ))
+            else:
+                # Boss death message
+                floating_texts.append(FloatingText(
+                    "The Ancient Guardian falls!",
+                    (self.rect.centerx, self.rect.y - 50),
+                    color=(255, 215, 0),
+                    lifetime=3000
+                ))
+
+            return self.health <= 0
+
+    def attack_player(self, player, current_time):
+        """Attack player if in range and cooldown passed."""
+        if self.hitbox.colliderect(player.rect):
+            if current_time - self.last_attack_time >= ENEMY_ATTACK_COOLDOWN:
+                self.last_attack_time = current_time
+                player.take_damage(self.damage, current_time)  # use player's method
+                floating_texts.append(FloatingText(
+                    f"-{self.damage}",
+                    (player.rect.x, player.rect.y - 20),
+                    color=(255, 0, 0)
+                ))
+                print(f"{self.type} attacked player for {self.damage} damage")
+                return True
+        return False
+
 
     # ------------------------
     # AI + Movement
@@ -388,7 +433,7 @@ class Enemy:
         dy = player_world_rect.centery - self.hitbox.centery
         distance_to_player = math.hypot(dx, dy)
 
-        # State logic
+        # State
         if distance_to_player <= ENEMY_AGGRO_RANGE:
             self.state = "chasing"
             self.target = player_world_rect
@@ -400,31 +445,33 @@ class Enemy:
         old_rect = self.rect.copy()
 
         if self.state == "chasing" and self.target:
-            if distance_to_player > ENEMY_ATTACK_RANGE * 0.8:  # stop if close enough
+            if distance_to_player > ENEMY_ATTACK_RANGE * 0.8:  # don't crowd too close
                 dx /= distance_to_player
                 dy /= distance_to_player
                 self.rect.x += dx * self.speed
-                self._resolve_collisions(obstacles, axis="x", old_rect=old_rect)
+                self._resolve_collisions(obstacles, "x", old_rect)
                 self.rect.y += dy * self.speed
-                self._resolve_collisions(obstacles, axis="y", old_rect=old_rect)
+                self._resolve_collisions(obstacles, "y", old_rect)
 
         elif self.state == "idle":
             self.path_timer += dt
             if self.path_timer >= 2000:  # change direction every 2s
-                self.random_direction = random.choice([(1, 0), (-1, 0), (0, 1), (0, -1), (0, 0)])
+                self.random_direction = random.choice(
+                    [(1, 0), (-1, 0), (0, 1), (0, -1), (0, 0)]
+                )
                 self.path_timer = 0
 
             dx, dy = self.random_direction
             self.rect.x += dx * self.speed * 0.5
-            self._resolve_collisions(obstacles, axis="x", old_rect=old_rect)
+            self._resolve_collisions(obstacles, "x", old_rect)
             self.rect.y += dy * self.speed * 0.5
-            self._resolve_collisions(obstacles, axis="y", old_rect=old_rect)
+            self._resolve_collisions(obstacles, "y", old_rect)
 
         # Sync hitbox with sprite
         self.hitbox.center = self.rect.center
 
     # ------------------------
-    # Collision helper
+    # Collision Helper
     # ------------------------
     def _resolve_collisions(self, obstacles, axis, old_rect):
         for obstacle in obstacles:
@@ -434,84 +481,35 @@ class Enemy:
                 elif axis == "y":
                     self.rect.y = old_rect.y
                 break
+
 class EnemySpawnPoint:
-    def __init__(self, x, y, enemy_type="orc", respawn_time=30000):
+    def __init__(self, x, y, enemy_type, respawn_time=25000):
         self.x = x
         self.y = y
         self.enemy_type = enemy_type
-        self.respawn_time = respawn_time  # milliseconds
+        self.respawn_time = respawn_time
         self.last_spawn_time = 0
-        self.current_enemy = None  # Reference to spawned enemy
-        self.is_active = True
-        print(f"Created {enemy_type} spawn point at ({x}, {y}) with {respawn_time}ms respawn")
-        
+        self.current_enemy = None
+
     def can_spawn(self, current_time):
-        """Check if this spawn point can create a new enemy."""
-        # Don't spawn if enemy still alive and in the enemies list
+        """Check if enough time has passed since last spawn."""
+        # If we still have an active enemy, don't spawn again
         if self.current_enemy and self.current_enemy in enemies:
             return False
-            
-        # Check respawn timer
-        time_since_spawn = current_time - self.last_spawn_time
-        can_spawn_now = time_since_spawn >= self.respawn_time
-        
-        if not can_spawn_now:
-            remaining_time = (self.respawn_time - time_since_spawn) / 1000.0
-            # Only print occasionally to avoid spam
-            if int(remaining_time) % 5 == 0 and remaining_time > 0:
-                print(f"{self.enemy_type} spawn at ({self.x}, {self.y}) cooldown: {remaining_time:.1f}s remaining")
-        
-        return can_spawn_now
-    
-    def spawn_enemy(self, current_time):
-        """Create and spawn an enemy at this point."""
-        if not self.can_spawn(current_time):
-            return None
-        
-        # Check if position is safe (not inside walls)
-        test_rect = pygame.Rect(self.x, self.y, PLAYER_SIZE, PLAYER_SIZE)
-        
-        # Check collision with walls
-        for wall in dungeon_walls:
-            if test_rect.colliderect(wall):
-                print(f"Cannot spawn {self.enemy_type} at ({self.x}, {self.y}) - inside wall!")
-                # Try nearby positions
-                for offset_x in [-TILE_SIZE, TILE_SIZE, 0]:
-                    for offset_y in [-TILE_SIZE, TILE_SIZE, 0]:
-                        if offset_x == 0 and offset_y == 0:
-                            continue
-                        new_test_rect = pygame.Rect(self.x + offset_x, self.y + offset_y, PLAYER_SIZE, PLAYER_SIZE)
-                        collision = False
-                        for wall in dungeon_walls:
-                            if new_test_rect.colliderect(wall):
-                                collision = True
-                                break
-                        if not collision:
-                            self.x += offset_x
-                            self.y += offset_y
-                            print(f"Moved spawn point to ({self.x}, {self.y})")
-                            break
-                    if not collision:
-                        break
-                else:
-                    print(f"Could not find safe spawn position near ({self.x}, {self.y})")
-                    return None
-        
 
-        # Create the enemy with frames
-        enemy = Enemy(
-            self.x, 
-            self.y, 
-            self.enemy_type,
-            frames=(enemy_frames if 'enemy_frames' in globals() else None)
-        )
-        print(f"Spawned {self.enemy_type} with {len(enemy.frames) if enemy.frames else 0} frames")
+        time_since_last = (current_time - self.last_spawn_time)
+        return time_since_last >= self.respawn_time
 
-        self.current_enemy = enemy
-        self.last_spawn_time = current_time
-        enemies.append(enemy)
-        print(f"✓ Spawned {self.enemy_type} at ({self.x}, {self.y}) - Total enemies: {len(enemies)}")
-        return enemy
+    def spawn_enemy(self, current_time, force=False):
+        """Try to spawn an enemy. If force=True, ignore cooldown."""
+        if force or self.can_spawn(current_time):
+            enemy = Enemy(self.x, self.y, self.enemy_type)
+            self.last_spawn_time = current_time
+            self.current_enemy = enemy
+            return enemy
+        return None
+
+
 class Boss(Enemy):
     def __init__(self, x, y, boss_data=None):
         # Call Enemy constructor with type "boss"
@@ -828,15 +826,19 @@ class Boss(Enemy):
         if self.state == "chasing" and distance_to_player <= self.attack_range * 1.5:
             self.use_special_ability(current_time, player)
 
-    def attack_player(self, player_world_rect, current_time):
-        """Check if enemy can attack player and return True if attacking."""
-        if current_time - self.last_attack_time < ENEMY_ATTACK_COOLDOWN:
-            return False
-    
-        attack_range_rect = self.hitbox.inflate(ENEMY_ATTACK_RANGE, ENEMY_ATTACK_RANGE)
-        if attack_range_rect.colliderect(player_world_rect):
-            self.last_attack_time = current_time
-            return True
+    def attack_player(self, player, current_time):
+        """Attack player if in range and cooldown passed."""
+        if self.hitbox.colliderect(player.rect):  # player has rect
+            if current_time - self.last_attack_time >= ENEMY_ATTACK_COOLDOWN:
+                self.last_attack_time = current_time
+                player.take_damage(self.damage)  # call player method
+                floating_texts.append(FloatingText(
+                    f"-{self.damage}",
+                    (player.rect.x, player.rect.y - 20),
+                    color=(255, 0, 0)
+                ))
+                print(f"{self.type} attacked player for {self.damage} damage")
+                return True
         return False
 
     # In your Boss class, move this method to the proper level
@@ -983,10 +985,9 @@ show_level_up = False
 boss1_portal = None
 dungeon_portal = None
 dungeon_walls = []
-dungeon_enemies = []
+enemies = []
 dungeon_exit = None
 boss_room_walls = []
-enemies = []
 enemy_spawn_points = []
 floating_texts = []
 boss_door_rect = None
@@ -1479,13 +1480,16 @@ def update_enemy_spawns():
         
         # Try to spawn new enemy
         if spawn_point.can_spawn(current_time):
-            new_enemy = spawn_point.spawn_enemy(current_time)
-            if new_enemy:
-                print(f"Successfully spawned {new_enemy.type}")
+            enemy = spawn_point.spawn_enemy(current_time)
+            if enemy:
+                enemies.append(enemy)
+                print(f"[SPAWNED] {enemy.type} at {enemy.rect.topleft}, total enemies={len(enemies)}")
+
     
     total_enemies_after = len(enemies)
     if total_enemies_after > total_enemies_before:
         print(f"Enemy count increased from {total_enemies_before} to {total_enemies_after}")
+
 def load_dungeon_map_with_enemies(dungeon1):
     """Enhanced map loading that includes walls, ores, portals, and enemy spawn points."""
     global enemy_spawn_points  # keep synced with map loading
@@ -2203,13 +2207,6 @@ def setup_dungeon_with_enemy_spawns(filename="dungeon1.txt"):
     global dungeon_walls, stone_rects, boss1_portal, dungeon_exit, enemies, enemy_spawn_points
 
     print(f"Setting up dungeon: {filename}")
-
-    # Clear existing data (DO THIS ONCE)
-    dungeon_walls.clear()
-    boss1_portal = None
-    enemies.clear()
-    enemy_spawn_points.clear()
-    stone_rects.clear()  # Clear dungeon stones
     
     # Load the enhanced map
     map_data = load_dungeon_map_with_enemies(filename)
@@ -2226,27 +2223,27 @@ def setup_dungeon_with_enemy_spawns(filename="dungeon1.txt"):
     if map_data.get('boss_portal'):
         boss1_portal = map_data['boss_portal']
     
-    # Initial enemy spawning - spawn immediately
-    current_time = pygame.time.get_ticks()
+    # 🔹 Force initial enemy spawn at all spawn points
     spawned_count = 0
-    
-    for spawn_point in enemy_spawn_points:
-        spawn_point.last_spawn_time = 0  # Force immediate spawn
-        enemy = spawn_point.spawn_enemy(current_time)
+    for sp in enemy_spawn_points:
+        sp.last_spawn_time = -999999  # so cooldown check always passes
+        enemy = sp.spawn_enemy(0)     # force with time=0
         if enemy:
+            enemies.append(enemy)
             spawned_count += 1
-            print(f"Spawned {enemy.type} at ({enemy.rect.x}, {enemy.rect.y})")
+            print(f"Initial spawn: {enemy.type} at {enemy.rect.topleft}")
     
-    print(f"Total enemies spawned: {spawned_count}")
-    print(f"Enemies list size: {len(enemies)}")
+    print(f"Total enemies spawned immediately: {spawned_count}")
+    print(f"Enemies list size after setup: {len(enemies)}")
     
-    # Return spawn point
+    # Return adjusted player spawn position
     spawn_x, spawn_y = map_data['spawn_point']
     spawn_x += 100
     spawn_x = max(2 * TILE_SIZE, min(spawn_x, (DUNGEON_SIZE-3) * TILE_SIZE))
     spawn_y = max(2 * TILE_SIZE, min(spawn_y, (DUNGEON_SIZE-3) * TILE_SIZE))
     
     return (spawn_x, spawn_y)
+
 
 def setup_colliders():
     """Generates the world colliders for the current level."""
@@ -2274,11 +2271,8 @@ def setup_colliders():
     
     # Setup dungeon if needed (but don't clear existing dungeon setup)
     if current_level == "dungeon" and not dungeon_walls:
-        setup_dungeon()
+        setup_dungeon_with_enemy_spawns()
     
-    # Setup dungeon if needed (but don't clear existing dungeon setup)
-    if current_level == "dungeon" and not dungeon_walls:
-        setup_dungeon()
 def draw_main_menu(screen, assets):
     """Draw the main menu screen with enhanced mouse hover effects."""
     screen.fill((20, 30, 40))  # Dark blue background
@@ -2355,7 +2349,7 @@ def draw_save_select_menu(screen, assets):
 
     # --- Setup dungeon if needed ---
     if not dungeon_walls:
-        setup_dungeon()
+        setup_dungeon_with_enemy_spawns()
         boss_door_rect = boss1_portal
 def load_map(map_name):
     """Load a specific map by name."""
@@ -3024,56 +3018,6 @@ def draw_world(screen, assets):
     if miner_npc_rect:
         miner_animated_y = miner_npc_rect.y + miner_idle_offset_y
         screen.blit(assets["miner_image"], (miner_npc_rect.x - map_offset_x, miner_animated_y - map_offset_y))
-# Add these functions to your code
-
-def setup_dungeon_with_enemy_spawns(filename="dungeon1.txt"):
-    """Setup dungeon with enemy spawn points from map."""
-    global dungeon_walls, stone_rects, boss1_portal, dungeon_exit, enemies, enemy_spawn_points
-
-    print(f"\n=== SETTING UP DUNGEON: {filename} ===")
-
-    # Clear existing data ONCE at the start
-    dungeon_walls.clear()
-    boss1_portal = None
-    enemies.clear()
-    enemy_spawn_points.clear()
-    stone_rects.clear()
-    
-    # Load the map with enemy spawn points
-    map_data = load_dungeon_map_with_enemies(filename)
-    
-    print(f"Map loaded: {len(map_data['enemy_spawns'])} spawn points found")
-    
-    # Apply map data
-    dungeon_walls.extend(map_data['walls'])
-    stone_rects.extend(map_data['ore_deposits'])
-    dungeon_exit = map_data['exit_point']
-    enemy_spawn_points.extend(map_data['enemy_spawns'])
-    
-    if map_data.get('boss_portal'):
-        boss1_portal = map_data['boss_portal']
-    
-    # Spawn initial enemies
-    current_time = pygame.time.get_ticks()
-    spawned_count = 0
-    
-    for spawn_point in enemy_spawn_points:
-        spawn_point.last_spawn_time = 0  # Force immediate spawn
-        enemy = spawn_point.spawn_enemy(current_time)
-        if enemy:
-            spawned_count += 1
-            print(f"✓ Spawned {enemy.type} at ({enemy.rect.x}, {enemy.rect.y})")
-    
-    print(f"Total spawned: {spawned_count}, Enemies list: {len(enemies)}")
-    print("=== DUNGEON SETUP COMPLETE ===\n")
-    
-    # Return spawn point
-    spawn_x, spawn_y = map_data['spawn_point']
-    spawn_x += 100
-    spawn_x = max(2 * TILE_SIZE, min(spawn_x, (DUNGEON_SIZE-3) * TILE_SIZE))
-    spawn_y = max(2 * TILE_SIZE, min(spawn_y, (DUNGEON_SIZE-3) * TILE_SIZE))
-    
-    return (spawn_x, spawn_y)
 
 
 def get_shop_items(assets):
@@ -4400,8 +4344,6 @@ def handle_playing_state(screen, assets, dt):
                         map_offset_x = portal_x - WIDTH // 2
                         map_offset_y = portal_y - HEIGHT // 2 + 100
                         player_pos.center = (WIDTH // 2, HEIGHT // 2)
-                        enemies.clear()
-                        enemy_spawn_points.clear()
 
                     # Enter Boss Room
                     elif boss1_portal and player_world_rect.colliderect(boss1_portal.inflate(20, 20)):
@@ -4484,7 +4426,7 @@ def handle_playing_state(screen, assets, dt):
 
         # Mouse click handling
         if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
-            _handle_mouse_clicks(event, assets, screen, dt)
+            _handle_mouse_clicks(event, assets, screen)
 
     # Game State Updates
     _update_npc_animations(dt)
@@ -4976,29 +4918,6 @@ def _handle_game_over(screen, assets):
             pygame.quit()
             sys.exit()
 
-# Additional helper function for the enhanced enemy spawning system
-def update_enemy_spawns():
-    """Enhanced enemy spawning with better debugging and enemy management."""
-    if current_level != "dungeon":
-        return
-        
-    current_time = pygame.time.get_ticks()
-    total_enemies_before = len(enemies)
-    
-    for spawn_point in enemy_spawn_points:
-        # Clean up dead enemy references
-        if spawn_point.current_enemy and spawn_point.current_enemy not in enemies:
-            print(f"Cleaning up dead {spawn_point.enemy_type} reference at spawn ({spawn_point.x}, {spawn_point.y})")
-            spawn_point.current_enemy = None
-        
-        # Try to spawn new enemy
-        if spawn_point.can_spawn(current_time):
-            new_enemy = spawn_point.spawn_enemy(current_time)
-            if new_enemy:
-                print(f"Successfully spawned {new_enemy.type} at ({new_enemy.rect.x}, {new_enemy.rect.y})")
-    
-    total_enemies_after = len(enemies)
-    if total_enemies_after > total_enemies_before:
-        print(f"Enemy count increased from {total_enemies_before} to {total_enemies_after}")
+
 
 main()
