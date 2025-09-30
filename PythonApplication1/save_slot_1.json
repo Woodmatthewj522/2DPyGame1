@@ -13,8 +13,8 @@
   },
   "world": {
     "current_level": "world",
-    "map_offset_x": 760,
-    "map_offset_y": 265
+    "map_offset_x": 705,
+    "map_offset_y": 185
   },
   "inventory": [
     [
@@ -66,5 +66,5 @@
     "miner_quest_active": false,
     "miner_quest_completed": false
   },
-  "timestamp": 7565
+  "timestamp": 98026
 }
