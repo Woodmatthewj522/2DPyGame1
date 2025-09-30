@@ -67,14 +67,16 @@ DUNGEON_SPAWN_Y = 5 * TILE_SIZE
 player_movement_history = []
 is_dashing = False
 dash_cooldown = 0
+
 # Music constants
 MUSIC_FILES = {
     "main_menu": "main.mp3",       # points to main.mp3
     "forest": "forest.mp3",        # points to forest.mp3
-    "dungeon": "dungeon_theme.mp3", 
-    "boss_room": "music/boss_battle.mp3"
+    "dungeon": "dungeon_theme.mp3",
+    "boss_room": "music/boss_battle.mp3",
+    "walk_sound": "walk.mp3"
 }
-
+walk_sound = None
 # --- CLASSES ---
 class Item:
     def __init__(self, name, image=None, count=1, category=None, damage=0, defense=0):
@@ -324,8 +326,12 @@ class Enemy:
             self.image.fill((180, 60, 60))
             self.rect = self.image.get_rect(topleft=(x, y))
 
-        # Smaller hitbox for collisions
-        self.hitbox = self.rect.inflate(-PLAYER_SIZE // 3, -PLAYER_SIZE // 3)
+        # Much smaller, tighter hitbox for better collision detection
+        self.hitbox = self.rect.inflate(-PLAYER_SIZE * 2, -PLAYER_SIZE * 2)
+        
+        # Track facing direction for flipping sprite
+        self.facing_right = True
+        self.last_dx = 0  # Track last horizontal movement
 
         # Stats
         self.type = enemy_type
@@ -417,23 +423,44 @@ class Enemy:
                 return True
         return False
 
+    # ------------------------
+    # Sprite Handling
+    # ------------------------
+    def update_sprite(self):
+        """Update the current sprite based on animation frame and facing direction."""
+        # Safety check - need frames to update sprite
+        if not self.frames or len(self.frames) == 0:
+            return
+        
+        # Get current animation frame
+        frame_idx = self.frame_index % len(self.frames)
+        base_frame = self.frames[frame_idx]
+        
+        # Create the sprite image based on facing direction
+        # When facing_right is True: use original sprite (faces right)
+        # When facing_right is False: flip sprite horizontally (faces left)
+        if self.facing_right:
+            self.image = base_frame.copy()
+        else:
+            # Flip the sprite horizontally to face left
+            self.image = pygame.transform.flip(base_frame.copy(), True, False)
 
     # ------------------------
     # AI + Movement
     # ------------------------
     def update(self, dt, current_time, player_world_rect, obstacles):
-        # Animate
+        # Animate frames
         self.frame_timer += dt
         if self.frame_timer >= self.frame_delay:
             self.frame_index = (self.frame_index + 1) % 4
             self.frame_timer = 0
 
-        # Distance to player
+        # Calculate distance and direction to player
         dx = player_world_rect.centerx - self.hitbox.centerx
         dy = player_world_rect.centery - self.hitbox.centery
         distance_to_player = math.hypot(dx, dy)
 
-        # State
+        # Determine AI state based on distance
         if distance_to_player <= ENEMY_AGGRO_RANGE:
             self.state = "chasing"
             self.target = player_world_rect
@@ -441,34 +468,67 @@ class Enemy:
             self.state = "idle"
             self.target = None
 
-        # Movement
+        # Movement logic
         old_rect = self.rect.copy()
+        actual_movement_x = 0  # Track actual horizontal movement this frame
 
         if self.state == "chasing" and self.target:
-            if distance_to_player > ENEMY_ATTACK_RANGE * 0.8:  # don't crowd too close
+            if distance_to_player > ENEMY_ATTACK_RANGE * 0.8:
+                # Update facing based on direction to player BEFORE normalizing
+                if abs(dx) > 1:
+                    new_facing = dx > 0
+                    if new_facing != self.facing_right:
+                        self.facing_right = new_facing
+                
+                # Normalize and move
                 dx /= distance_to_player
                 dy /= distance_to_player
-                self.rect.x += dx * self.speed
+                
+                # Apply movement
+                move_x = dx * self.speed
+                move_y = dy * self.speed
+                
+                self.rect.x += move_x
                 self._resolve_collisions(obstacles, "x", old_rect)
-                self.rect.y += dy * self.speed
+                actual_movement_x = self.rect.x - old_rect.x
+                
+                self.rect.y += move_y
                 self._resolve_collisions(obstacles, "y", old_rect)
 
         elif self.state == "idle":
+            # Change direction periodically
             self.path_timer += dt
-            if self.path_timer >= 2000:  # change direction every 2s
+            if self.path_timer >= 2000:
                 self.random_direction = random.choice(
                     [(1, 0), (-1, 0), (0, 1), (0, -1), (0, 0)]
                 )
                 self.path_timer = 0
 
-            dx, dy = self.random_direction
-            self.rect.x += dx * self.speed * 0.5
+            # Get movement direction
+            dir_x, dir_y = self.random_direction
+            
+            # Update facing based on movement direction
+            if dir_x != 0:
+                new_facing = dir_x > 0
+                if new_facing != self.facing_right:
+                    self.facing_right = new_facing
+            
+            # Apply idle movement (slower)
+            move_x = dir_x * self.speed * 0.5
+            move_y = dir_y * self.speed * 0.5
+            
+            self.rect.x += move_x
             self._resolve_collisions(obstacles, "x", old_rect)
-            self.rect.y += dy * self.speed * 0.5
+            actual_movement_x = self.rect.x - old_rect.x
+            
+            self.rect.y += move_y
             self._resolve_collisions(obstacles, "y", old_rect)
 
-        # Sync hitbox with sprite
+        # Sync hitbox with sprite rect
         self.hitbox.center = self.rect.center
+        
+        # Update sprite to match current facing direction
+        self.update_sprite()
 
     # ------------------------
     # Collision Helper
@@ -481,7 +541,6 @@ class Enemy:
                 elif axis == "y":
                     self.rect.y = old_rect.y
                 break
-
 class EnemySpawnPoint:
     def __init__(self, x, y, enemy_type, respawn_time=25000):
         self.x = x
@@ -500,10 +559,10 @@ class EnemySpawnPoint:
         time_since_last = (current_time - self.last_spawn_time)
         return time_since_last >= self.respawn_time
 
+    # In setup_dungeon_with_enemy_spawns, modify the spawn_enemy method call
     def spawn_enemy(self, current_time, force=False):
-        """Try to spawn an enemy. If force=True, ignore cooldown."""
         if force or self.can_spawn(current_time):
-            enemy = Enemy(self.x, self.y, self.enemy_type)
+            enemy = Enemy(self.x, self.y, self.enemy_type, frames=enemy_frames)  # Pass frames!
             self.last_spawn_time = current_time
             self.current_enemy = enemy
             return enemy
@@ -1971,7 +2030,7 @@ def load_assets():
     tree_image = try_load_image(os.path.join("Tiles", "tree.png"), (TILE_SIZE + 5, TILE_SIZE + 5), (101, 67, 33))
     house_image = try_load_image(os.path.join("Tiles", "house.png"), (TILE_SIZE * 2, TILE_SIZE * 2), (139, 69, 19))
     house1_image = try_load_image(os.path.join("Tiles", "house1.png"), (TILE_SIZE * 2, TILE_SIZE * 2), (160, 82, 45))
-
+    house2_image = try_load_image(os.path.join("Tiles", "house2.png"), (TILE_SIZE * 2, TILE_SIZE * 2), (205, 133, 63))
     # --- Outdoor Stuff (sheet) ---
     try:
         sheet = pygame.image.load("OutdoorStuff.PNG").convert_alpha()
@@ -2067,6 +2126,7 @@ def load_assets():
         "tree": tree_image,
         "house": house_image,
         "house1": house1_image,
+        "house2": house2_image,
         "interiors": interiors,
         "flowers": flower_images,
         "leaf": leaf_image,
@@ -2504,7 +2564,7 @@ def handle_combat(current_time):
                     return
         else:
             # Regular enemy attack
-            if enemy.attack_player(player_world_rect, current_time):
+            if enemy.attack_player(player, current_time):
                 if player.take_damage(enemy.damage, current_time):
                     handle_player_death()
                     return
@@ -2512,7 +2572,6 @@ def handle_combat(current_time):
 def handle_player_death():
     """Handle what happens when player dies."""
     global current_level, map_offset_x, map_offset_y, player_pos
-    
     print("You died!")
     
     # Always respawn at the world spawn point regardless of where player died
@@ -3794,12 +3853,11 @@ def draw_ability_bar(screen, assets):
                 screen.blit(count_surf, count_rect)
 # --- MAIN GAME LOGIC ---
 def handle_movement(keys):
-    """Enhanced movement that tracks direction for better combat."""
     global current_direction, last_direction, player_movement_history
-    
+
     dx = dy = 0
     new_direction = None
-    
+
     if keys[pygame.K_a]:
         dx -= PLAYER_SPEED
         new_direction = "left"
@@ -3812,24 +3870,24 @@ def handle_movement(keys):
     if keys[pygame.K_s]:
         dy += PLAYER_SPEED
         new_direction = "down"
-    
+
     # Update directions and track movement
     if new_direction:
+
         current_direction = new_direction
         last_direction = new_direction
-        
-        # Track recent movement for better attacks
+
         current_time = pygame.time.get_ticks()
         player_movement_history.append((new_direction, current_time))
-        
+
         # Keep only recent movement (last 500ms)
         player_movement_history = [
-            (direction, timestamp) for direction, timestamp in player_movement_history 
+            (direction, timestamp) for direction, timestamp in player_movement_history
             if current_time - timestamp < 500
         ]
     else:
         current_direction = "idle"
-    
+
     return dx, dy
 
 def handle_dash(current_time):
@@ -4064,6 +4122,7 @@ def main():
 def handle_boss_door(player_world_rect, assets):
     """Checks for boss door interaction inside dungeon."""
     global current_level
+    global boss_door
 
     if boss_door and player_world_rect.colliderect(boss_door.inflate(20, 20)):
         # Show tooltip
@@ -4099,16 +4158,19 @@ def handle_playing_state(screen, assets, dt):
     global enemies, enemy_spawn_points
     global equipment_slots
     global show_pause_menu, pause_menu_selected_option
-
+    global walk_sound
+    
     # Load frames if not already loaded
     if not hasattr(handle_playing_state, 'frames_loaded'):
-        global enemy_frames
+        global enemy_frames  
         handle_playing_state.player_frames = load_player_frames()
         handle_playing_state.chopping_frames = load_chopping_frames()
         handle_playing_state.attack_frames = load_attack_frames()
-        handle_playing_state.enemy_frames = load_enemy_frames()
-        handle_playing_state.frames_loaded = True
-        
+        handle_playing_state.enemy_frames = load_enemy_frames()  # FIX: assign to function
+        enemy_frames = handle_playing_state.enemy_frames         # FIX: also set global
+    
+        handle_playing_state.frames_loaded = True  # mark initialized
+
         # Initialize world if first time
         setup_colliders()
         give_starting_items(assets)
@@ -4202,7 +4264,7 @@ def handle_playing_state(screen, assets, dt):
             sys.exit()
 
         if show_pause_menu:
-            handle_pause_menu_input(event, assets)
+            handle_pause_menu_input(event, assets, dt)
             continue
 
         if current_level == "boss_room":

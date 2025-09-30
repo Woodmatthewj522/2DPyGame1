@@ -13,28 +13,28 @@
   },
   "world": {
     "current_level": "world",
-    "map_offset_x": 705,
-    "map_offset_y": 185
+    "map_offset_x": 360,
+    "map_offset_y": 250
   },
   "inventory": [
     [
       {
         "name": "Stone",
-        "count": 4,
-        "category": null,
-        "damage": 0
-      },
-      {
-        "name": "Potion",
-        "count": 4,
+        "count": 14,
         "category": null,
         "damage": 0
       },
       {
         "name": "Axe",
-        "count": 2,
+        "count": 1,
         "category": "Weapon",
         "damage": 20
+      },
+      {
+        "name": "Pickaxe",
+        "count": 1,
+        "category": "Weapon",
+        "damage": 15
       },
       null
     ],
@@ -66,5 +66,5 @@
     "miner_quest_active": false,
     "miner_quest_completed": false
   },
-  "timestamp": 98026
+  "timestamp": 19735
 }
