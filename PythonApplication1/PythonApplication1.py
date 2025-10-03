@@ -18,7 +18,7 @@ ICON_SIZE = 30
 CHOPPING_DURATION = 3000
 RESPAWN_TIME = 120000  # 2 mins
 MINING_DURATION = 2000  # ms
-
+SFX_VOLUME = 0.3
 # Combat constants
 COMBAT_RANGE = 80
 COMBAT_COOLDOWN = 2000  # ms between attacks (slower)
@@ -67,6 +67,9 @@ DUNGEON_SPAWN_Y = 5 * TILE_SIZE
 player_movement_history = []
 is_dashing = False
 dash_cooldown = 0
+is_game_over = False  # ADD THIS LINE
+chop_sound_played = False
+mine_sound_played = False
 
 # Music constants
 MUSIC_FILES = {
@@ -353,6 +356,9 @@ class Enemy:
         # XP reward scales with player level
         self.experience_reward = base_xp + (player.level * 5)
 
+        # Loot table
+        self.loot_table = self._generate_loot_table(enemy_type)
+
         # Animation
         self.frame_index = 0
         self.frame_timer = 0
@@ -423,6 +429,40 @@ class Enemy:
                 return True
         return False
 
+    # Loot table generation
+    def _generate_loot_table(self, enemy_type):
+        """Define what items this enemy type can drop."""
+        if enemy_type == "orc":
+            return [
+                {"item_name": "Coin", "chance": 0.5, "min_count": 1, "max_count": 3},
+                {"item_name": "Potion", "chance": 0.15, "min_count": 1, "max_count": 1},
+                {"item_name": "Ore", "chance": 0.25, "min_count": 1, "max_count": 2},
+            ]
+        elif enemy_type == "goblin":
+            return [
+                {"item_name": "Coin", "chance": 0.6, "min_count": 1, "max_count": 2},
+                {"item_name": "Flower", "chance": 0.3, "min_count": 1, "max_count": 1},
+            ]
+        else:
+            return [
+                {"item_name": "Coin", "chance": 0.5, "min_count": 1, "max_count": 1},
+            ]
+    
+    def drop_loot(self, assets):
+        """Generate loot drops when enemy dies."""
+        drops = []
+        for loot_entry in self.loot_table:
+            if random.random() < loot_entry["chance"]:
+                count = random.randint(loot_entry["min_count"], loot_entry["max_count"])
+                item_name = loot_entry["item_name"]
+                
+                # Get the actual item object from assets
+                item_key = f"{item_name.lower()}_item"
+                if item_key in assets:
+                    for _ in range(count):
+                        drops.append(assets[item_key])
+        
+        return drops
     # ------------------------
     # Sprite Handling
     # ------------------------
@@ -603,16 +643,6 @@ class Boss(Enemy):
         self.experience_reward = 500  # More XP than regular enemies
         self.speed = ENEMY_SPEED * 0.8  # Slightly slower than regular enemies
         
-        # Special abilities
-        self.special_ability_cooldown = 5000  # ms
-        self.last_special_ability = 0
-        self.charge_cooldown = 8000  # ms
-        self.last_charge_attack = 0
-        self.is_charging = False
-        self.charge_timer = 0
-        self.charge_duration = 2000  # ms
-        self.charge_target = None
-        
         # Boss phases based on health
         self.phase = 1  # 1, 2, or 3
         self.last_phase_change = 0
@@ -627,6 +657,12 @@ class Boss(Enemy):
         self.circle_angle = 0
         self.retreat_timer = 0
 
+        # Loot table
+        self.loot_table = [
+                {"item_name": "Coin", "chance": .3, "min_count": 20, "max_count": 30},
+                {"item_name": "Potion", "chance": 0.1, "min_count": 2, "max_count": 4},
+                {"item_name": "Ore", "chance": 0.1, "min_count": 5, "max_count": 8},
+            ]
     def get_current_phase(self):
         """Determine boss phase based on health percentage."""
         health_percent = self.health / self.max_health
@@ -643,7 +679,7 @@ class Boss(Enemy):
             old_phase = self.phase
             self.phase = new_phase
             self.last_phase_change = current_time
-            
+        
             # Visual feedback for phase change
             floating_texts.append(FloatingText(
                 f"Phase {self.phase}!",
@@ -651,138 +687,66 @@ class Boss(Enemy):
                 color=(255, 215, 0),  # Gold
                 lifetime=2000
             ))
-            
+        
             # Phase-specific changes
             if self.phase == 2:
                 self.speed = ENEMY_SPEED * 1.0  # Normal speed
                 self.special_ability_cooldown = 4000  # Faster specials
                 print(f"{self.name} enters Phase 2 - Enhanced Aggression!")
-                
+            
             elif self.phase == 3:
                 self.speed = ENEMY_SPEED * 1.2  # Faster
                 self.special_ability_cooldown = 3000  # Even faster specials
                 self.charge_cooldown = 6000  # More frequent charges
                 print(f"{self.name} enters Phase 3 - Enraged!")
 
-    
 
-    def _slam_attack(self, player, current_time):
-        """Basic slam attack - high damage, single target."""
-        damage = int(self.damage * 1.5)
-        if player.take_damage(damage, current_time):
-            return
-            
-        floating_texts.append(FloatingText(
-            "Mighty Slam!",
-            (self.rect.centerx, self.rect.y - 30),
-            color=(255, 100, 0),
-            lifetime=1500
-        ))
 
-    def _shockwave_attack(self, player, current_time):
-        """AOE attack that hits if player is nearby."""
-        shockwave_range = self.attack_range * 1.5
-        distance = math.hypot(
-            player.rect.centerx - self.rect.centerx,
-            player.rect.centery - self.rect.centery
-        )
-        
-        if distance <= shockwave_range:
-            damage = int(self.damage * 1.2)
-            player.take_damage(damage, current_time)
-            
-        floating_texts.append(FloatingText(
-            "Shockwave!",
-            (self.rect.centerx, self.rect.y - 30),
-            color=(255, 150, 0),
-            lifetime=1500
-        ))
-
-    def _combo_attack(self, player, current_time):
-        """Phase 3 combo attack - multiple hits."""
-        base_damage = int(self.damage * 0.8)
-        
-        # First hit
-        if player.take_damage(base_damage, current_time):
-            return
-            
-        # Schedule second hit (simplified - in a full implementation you'd use a proper system)
-        player.take_damage(base_damage, current_time + 500)
-        
-        floating_texts.append(FloatingText(
-            "Fury Combo!",
-            (self.rect.centerx, self.rect.y - 30),
-            color=(255, 50, 50),
-            lifetime=2000
-        ))
-
-    def initiate_charge_attack(self, player_pos, current_time):
-        """Start a charge attack toward the player."""
-        if current_time - self.last_charge_attack < self.charge_cooldown:
-            return False
-            
-        if self.is_charging:
-            return False
-            
-        self.is_charging = True
-        self.charge_timer = 0
-        self.charge_target = (player_pos.centerx, player_pos.centery)
-        self.last_charge_attack = current_time
-        self.movement_pattern = "charge"
-        
-        floating_texts.append(FloatingText(
-            "Charging!",
-            (self.rect.centerx, self.rect.y - 40),
-            color=(255, 200, 0),
-            lifetime=1000
-        ))
-        
-        return True
 
     def update_movement_pattern(self, dt, current_time, player_world_rect):
-        """Advanced movement patterns for the boss."""
+        """Enemy AI: idle until player is close, then chase."""
         self.pattern_timer += dt
-        
-        # Change patterns periodically or based on conditions
-        if self.pattern_timer > 5000:  # Change pattern every 5 seconds
-            patterns = ["chase", "circle"]
-            if self.phase >= 2:
-                patterns.append("retreat")
-            
-            self.movement_pattern = random.choice(patterns)
-            self.pattern_timer = 0
-            
-        # Handle charge attack opportunity
-        if (self.phase >= 2 and 
-            not self.is_charging and 
-            current_time - self.last_charge_attack > self.charge_cooldown and
-            random.random() < 0.002):  # Small chance each frame
-            
-            distance = math.hypot(
-                player_world_rect.centerx - self.rect.centerx,
-                player_world_rect.centery - self.rect.centery
-            )
-            
-            if 100 < distance < 300:  # Good charge distance
-                self.initiate_charge_attack(player_world_rect, current_time)
+
+        # --- Distance check (aggro range) ---
+        dx = player_world_rect.centerx - self.rect.centerx
+        dy = player_world_rect.centery - self.rect.centery
+        dist = math.hypot(dx, dy)
+
+        AGGRO_RADIUS = 250   # pixels to start chasing
+        DEAGGRO_RADIUS = 400 # pixels to stop chasing
+
+        if not getattr(self, "is_chasing", False):
+            self.is_chasing = False
+
+        if self.is_chasing:
+            if dist > DEAGGRO_RADIUS:   # too far, stop chasing
+                self.is_chasing = False
+        else:
+            if dist < AGGRO_RADIUS:     # close enough, start chasing
+                self.is_chasing = True
+
+        # --- Movement behavior ---
+        if self.is_chasing and dist > 0:
+            # Always chase when aggroed
+            self.vx = (dx / dist) * self.speed
+            self.vy = (dy / dist) * self.speed
+        else:
+            # Idle (no movement) — you can also add wandering here
+            self.vx = 0
+            self.vy = 0
+
+        # --- Apply velocity ---
+        self.rect.x += int(self.vx * dt / 16)
+        self.rect.y += int(self.vy * dt / 16)
+
+
 
     def update(self, dt, current_time, player_world_rect, obstacles):
-        """Enhanced boss update with phases and special behaviors."""
         # Update phase based on health
         current_phase = self.get_current_phase()
         if current_phase != self.phase:
             self.change_phase(current_phase, current_time)
-        
-        # Update movement patterns
-        self.update_movement_pattern(dt, current_time, player_world_rect)
-        
-        # Handle charge attack
-        if self.is_charging:
-            self.charge_timer += dt
-            if self.charge_timer >= self.charge_duration:
-                self.is_charging = False
-                self.movement_pattern = "chase"
-                
+    
         # Animate
         self.frame_timer += dt
         if self.frame_timer >= self.frame_delay:
@@ -794,7 +758,7 @@ class Boss(Enemy):
         dy = player_world_rect.centery - self.hitbox.centery
         distance_to_player = math.hypot(dx, dy)
 
-        # Enhanced AI state logic
+        # AI state logic
         if distance_to_player <= self.aggro_range:
             self.state = "chasing"
             self.target = player_world_rect
@@ -802,78 +766,31 @@ class Boss(Enemy):
             self.state = "idle"
             self.target = None
 
-        # Movement based on pattern and state
+        # Movement
         old_rect = self.rect.copy()
-        
+    
         if self.state == "chasing" and self.target:
-            if self.is_charging:
-                # Charge movement - fast and direct
-                if self.charge_target:
-                    charge_dx = self.charge_target[0] - self.rect.centerx
-                    charge_dy = self.charge_target[1] - self.rect.centery
-                    charge_distance = math.hypot(charge_dx, charge_dy)
-                    
-                    if charge_distance > 10:  # Still moving toward target
-                        charge_dx /= charge_distance
-                        charge_dy /= charge_distance
-                        charge_speed = self.speed * 3  # Much faster during charge
-                        self.rect.x += charge_dx * charge_speed
-                        self._resolve_collisions(obstacles, axis="x", old_rect=old_rect)
-                        self.rect.y += charge_dy * charge_speed  
-                        self._resolve_collisions(obstacles, axis="y", old_rect=old_rect)
-                        
-            elif self.movement_pattern == "circle" and distance_to_player < 200:
-                # Circle around player
-                self.circle_angle += 0.05
-                circle_radius = 120
-                target_x = player_world_rect.centerx + math.cos(self.circle_angle) * circle_radius
-                target_y = player_world_rect.centery + math.sin(self.circle_angle) * circle_radius
-                
-                circle_dx = target_x - self.rect.centerx
-                circle_dy = target_y - self.rect.centery
-                circle_distance = math.hypot(circle_dx, circle_dy)
-                
-                if circle_distance > 10:
-                    circle_dx /= circle_distance
-                    circle_dy /= circle_distance
-                    self.rect.x += circle_dx * self.speed * 0.7
-                    self._resolve_collisions(obstacles, axis="x", old_rect=old_rect)
-                    self.rect.y += circle_dy * self.speed * 0.7
-                    self._resolve_collisions(obstacles, axis="y", old_rect=old_rect)
-                    
-            elif self.movement_pattern == "retreat" and distance_to_player < 100:
-                # Retreat to a better position
-                self.retreat_timer += dt
-                if self.retreat_timer < 2000:  # Retreat for 2 seconds
-                    retreat_dx = -dx / distance_to_player  # Move away from player
-                    retreat_dy = -dy / distance_to_player
-                    self.rect.x += retreat_dx * self.speed * 1.5
-                    self._resolve_collisions(obstacles, axis="x", old_rect=old_rect)
-                    self.rect.y += retreat_dy * self.speed * 1.5
-                    self._resolve_collisions(obstacles, axis="y", old_rect=old_rect)
-                else:
-                    self.retreat_timer = 0
-                    self.movement_pattern = "chase"
-                    
-            else:
-                # Standard chase behavior
-                if distance_to_player > self.attack_range * 0.8:
-                    dx /= distance_to_player
-                    dy /= distance_to_player
-                    self.rect.x += dx * self.speed
-                    self._resolve_collisions(obstacles, axis="x", old_rect=old_rect)
-                    self.rect.y += dy * self.speed
-                    self._resolve_collisions(obstacles, axis="y", old_rect=old_rect)
+            # Chase the player if not in attack range
+            if distance_to_player > self.attack_range * 0.8:
+                # Normalize direction
+                dx /= distance_to_player
+                dy /= distance_to_player
+            
+                # Move toward player
+                self.rect.x += dx * self.speed
+                self._resolve_collisions(obstacles, axis="x", old_rect=old_rect)
+                self.rect.y += dy * self.speed
+                self._resolve_collisions(obstacles, axis="y", old_rect=old_rect)
 
         elif self.state == "idle":
-            # Idle movement - slower and more random
+            # Idle wandering
             self.path_timer += dt
-            if self.path_timer >= 3000:  # Change direction every 3s (slower than regular enemies)
+            if self.path_timer >= 3000:
                 self.random_direction = random.choice([(1, 0), (-1, 0), (0, 1), (0, -1), (0, 0)])
                 self.path_timer = 0
 
             dx, dy = self.random_direction
-            self.rect.x += dx * self.speed * 0.3  # Slower idle movement
+            self.rect.x += dx * self.speed * 0.3
             self._resolve_collisions(obstacles, axis="x", old_rect=old_rect)
             self.rect.y += dy * self.speed * 0.3
             self._resolve_collisions(obstacles, axis="y", old_rect=old_rect)
@@ -881,19 +798,25 @@ class Boss(Enemy):
         # Sync hitbox with sprite
         self.hitbox.center = self.rect.center
         
-        # Try special abilities
-        if self.state == "chasing" and distance_to_player <= self.attack_range * 1.5:
-            self.use_special_ability(current_time, player)
-
     def attack_player(self, player, current_time):
         """Attack player if in range and cooldown passed."""
-        if self.hitbox.colliderect(player.rect):  # player has rect
+        # Handle both Player objects and Rect objects
+        if isinstance(player, pygame.Rect):
+            player_rect = player
+        else:
+            player_rect = player.rect
+    
+        if self.hitbox.colliderect(player_rect):
             if current_time - self.last_attack_time >= ENEMY_ATTACK_COOLDOWN:
                 self.last_attack_time = current_time
-                player.take_damage(self.damage)  # call player method
+            
+                # If player is a Player object, use its take_damage method
+                if hasattr(player, 'take_damage'):
+                    player.take_damage(self.damage, current_time)
+            
                 floating_texts.append(FloatingText(
                     f"-{self.damage}",
-                    (player.rect.x, player.rect.y - 20),
+                    (player_rect.x, player_rect.y - 20),
                     color=(255, 0, 0)
                 ))
                 print(f"{self.type} attacked player for {self.damage} damage")
@@ -941,6 +864,35 @@ class Boss(Enemy):
             ))
 
         return self.health <= 0
+# LootDrop Class
+class LootDrop:
+    def __init__(self, x, y, item, lifetime=10000):
+        """
+        x, y: world coordinates where loot spawns
+        item: Item object
+        lifetime: how long (ms) before loot disappears
+        """
+        self.item = item
+        self.rect = pygame.Rect(x, y, 30, 30)
+        self.spawn_time = pygame.time.get_ticks()
+        self.lifetime = lifetime
+        self.bobbing_offset = 0
+        self.bobbing_timer = 0
+    
+    def update(self, dt):
+        """Make the loot bob up and down."""
+        self.bobbing_timer += dt
+        self.bobbing_offset = int(5 * math.sin(self.bobbing_timer / 200.0))
+    
+    def is_expired(self, current_time):
+        return current_time - self.spawn_time > self.lifetime
+    
+    def draw(self, screen, camera_x, camera_y):
+        screen_x = self.rect.x - camera_x
+        screen_y = self.rect.y - camera_y + self.bobbing_offset
+        
+        item_image = pygame.transform.scale(self.item.image, (30, 30))
+        screen.blit(item_image, (screen_x, screen_y))
 
 # --- GAME STATE GLOBALS ---
 player_pos = pygame.Rect(WIDTH // 2, HEIGHT // 2, PLAYER_SIZE, PLAYER_SIZE)
@@ -963,7 +915,7 @@ chopping_timer = 0
 chopping_target_tree = None
 is_swinging = False
 swing_delay = 150
-idle_chop_delay = 500
+idle_chop_delay = 0
 enemy_frames = None
 # Stone specific state
 is_mining = False
@@ -1034,7 +986,7 @@ npc_rect = None
 miner_npc_rect = None
 gold_coins = []
 last_enemy_spawn = 0
-
+loot_drops = []
 # Level up visual feedback
 level_up_timer = 0
 level_up_text = ""
@@ -1101,6 +1053,7 @@ def init_music():
     try:
         pygame.mixer.pre_init(frequency=22050, size=-16, channels=2, buffer=512)
         pygame.mixer.init()
+        pygame.mixer.set_num_channels(8)  # Allocate 8 channels for sound effects
         music_volume = 0.5
         pygame.mixer.music.set_volume(music_volume)
         print("Music system initialized successfully")
@@ -1465,7 +1418,6 @@ def draw_boss_room(screen, assets):
         else:
             text.draw(screen, assets["small_font"], map_offset_x, map_offset_y)
 
-    # ... rest of existing code ...
 def load_boss_room_map(boss_room):
     data = {
         "walls": [],
@@ -1550,8 +1502,7 @@ def update_enemy_spawns():
         print(f"Enemy count increased from {total_enemies_before} to {total_enemies_after}")
 
 def load_dungeon_map_with_enemies(dungeon1):
-    """Enhanced map loading that includes walls, ores, portals, and enemy spawn points."""
-    global enemy_spawn_points  # keep synced with map loading
+    global enemy_spawn_points  
 
     map_data = {
         'walls': [],
@@ -1562,16 +1513,6 @@ def load_dungeon_map_with_enemies(dungeon1):
         'enemy_spawns': []
     }
 
-    
-    # ADD THIS DEBUG:
-    print(f"\n=== DUNGEON MAP LOADED ===")
-    print(f"File: {dungeon1}")
-    print(f"Enemy spawns found: {len(map_data['enemy_spawns'])}")
-    for i, spawn in enumerate(map_data['enemy_spawns']):
-        print(f"  Spawn {i+1}: {spawn.enemy_type} at ({spawn.x}, {spawn.y})")
-    print(f"Walls: {len(map_data['walls'])}")
-    print(f"Ore deposits: {len(map_data['ore_deposits'])}")
-    print("========================\n")
     tile_mapping = {
         '#': 'wall',
         'O': 'ore',
@@ -1579,67 +1520,49 @@ def load_dungeon_map_with_enemies(dungeon1):
         'B': 'boss_portal',
         'E': 'exit',
         '.': 'floor',
-        'e': 'enemy_orc',       # Orc
-        'g': 'enemy_goblin',    # Goblin
-        's': 'enemy_strong',    # Stronger enemy (e.g., elite orc)
+        'e': 'enemy_orc',
+        'g': 'enemy_goblin',
+        's': 'enemy_strong',
     }
-
-    print(f"Loading dungeon map: {dungeon1}")
 
     try:
         with open(dungeon1, 'r') as f:
-            lines = f.readlines()
-
-        print(f"Map file loaded, {len(lines)} lines found")
+            lines = [line.rstrip("\n") for line in f]  # ✅ keep spacing
 
         for row, line in enumerate(lines):
-            line = line.strip()
             for col, char in enumerate(line):
                 x, y = col * TILE_SIZE, row * TILE_SIZE
 
-                if char not in tile_mapping:
-                    continue
-
-                if char == '@':  # Player spawn
+                if char == '@':
                     map_data['spawn_point'] = (x, y)
-                    print(f"Player spawn at ({x}, {y})")
 
-                elif char == 'E':  # Exit
+                elif char == 'E':
                     map_data['exit_point'] = pygame.Rect(x, y, TILE_SIZE * 2, TILE_SIZE * 2)
-                    print(f"Exit portal at ({x}, {y})")
 
-                elif char == '#':  # Wall
+                elif char == '#':
                     map_data['walls'].append(pygame.Rect(x, y, TILE_SIZE, TILE_SIZE))
 
-                elif char == 'O':  # Ore
-                    offset = (TILE_SIZE - (TILE_SIZE // 2)) // 2
-                    map_data['ore_deposits'].append(
-                        pygame.Rect(x + offset, y + offset, TILE_SIZE // 2, TILE_SIZE // 2)
-                    )
+                elif char == 'O':
+                    map_data['ore_deposits'].append(pygame.Rect(x, y, TILE_SIZE, TILE_SIZE))  # ✅ full tile
 
-                elif char == 'B':  # Boss portal
+                elif char == 'B':
                     map_data['boss_portal'] = pygame.Rect(x, y, TILE_SIZE * 2, TILE_SIZE * 2)
-                    print(f"Boss portal at ({x}, {y})")
 
-                # === Enemy spawn points ===
-                elif char == 'e':  # Orc
-                    sp = EnemySpawnPoint(x + TILE_SIZE // 2, y + TILE_SIZE // 2, "orc", respawn_time=30000)
+                # === Enemy spawns (only valid on non-wall tiles) ===
+                elif char == 'e':
+                    sp = EnemySpawnPoint(x, y, "orc", respawn_time=30000)
                     map_data['enemy_spawns'].append(sp)
 
-                elif char == 's':  # Strong enemy (elite orc)
-                    sp = EnemySpawnPoint(x + TILE_SIZE // 2, y + TILE_SIZE // 2, "orc_strong", respawn_time=45000)
+                elif char == 's':
+                    sp = EnemySpawnPoint(x, y, "orc_strong", respawn_time=45000)
                     map_data['enemy_spawns'].append(sp)
 
-                elif char == 'g':  # Goblin
-                    sp = EnemySpawnPoint(x + TILE_SIZE // 2, y + TILE_SIZE // 2, "goblin", respawn_time=20000)
+                elif char == 'g':
+                    sp = EnemySpawnPoint(x, y, "goblin", respawn_time=20000)
                     map_data['enemy_spawns'].append(sp)
 
-        # Sync global list for game loop
+        # Sync global spawns
         enemy_spawn_points = map_data['enemy_spawns']
-
-        print(f"Map parsing complete: {len(enemy_spawn_points)} enemy spawn points found")
-        for i, sp in enumerate(enemy_spawn_points, 1):
-            print(f"  Spawn {i}: {sp.enemy_type} at ({sp.x}, {sp.y})")
 
     except FileNotFoundError:
         print(f"Could not load dungeon map: {dungeon1}")
@@ -1647,6 +1570,7 @@ def load_dungeon_map_with_enemies(dungeon1):
         enemy_spawn_points = map_data['enemy_spawns']
 
     return map_data
+
 
 def apply_map_data(map_data):
     """Apply loaded map data to game globals."""
@@ -1862,6 +1786,182 @@ def load_save_slots():
                 }
         except:
             save_slots[i] = None
+# Helper functions to clean up the main function
+def _handle_other_resources(player_world_rect, assets):
+    """Handle mining and flower picking when player has axe."""
+    global equipment_slots, is_mining, mining_target_stone, mining_timer, current_direction
+    
+    if equipment_slots["weapon"] and equipment_slots["weapon"].name == "Pickaxe":
+        for stone in list(stone_rects):
+            if player_world_rect.colliderect(stone.inflate(20, 20)):
+                is_mining = True
+                mining_target_stone = stone
+                mining_timer = 0
+                current_direction = "idle"
+                break
+        else:
+            _handle_flower_picking(player_world_rect, assets)
+    else:
+        _handle_flower_picking(player_world_rect, assets)
+
+def _handle_flower_picking(player_world_rect, assets):
+    """Handle flower picking."""
+    for fx, fy, idx in list(flower_tiles):
+        flower_rect = pygame.Rect(fx, fy, 30, 30)
+        if player_world_rect.colliderect(flower_rect.inflate(10, 10)):
+            add_item_to_inventory(assets["flower_item"])
+            flower_tiles.remove((fx, fy, idx))
+            print("Picked a flower!")
+            break
+
+def _handle_mouse_clicks(event, assets, screen):
+    """Handle all mouse click events."""
+    if show_vendor_gui:
+        _handle_vendor_clicks(event, assets)
+    elif show_crafting and not is_crafting:
+        _handle_crafting_clicks(event, assets)
+    elif show_equipment:
+        equipment_slot_rects = draw_equipment_panel(screen, assets)
+        handle_equipment_click(event.pos, equipment_slot_rects)
+    elif show_inventory:
+        handle_inventory_click(event.pos)
+
+def _handle_vendor_clicks(event, assets):
+    """Handle vendor GUI clicks."""
+    global vendor_tab
+    
+    if "buy_tab" in buy_button_rects and buy_button_rects["buy_tab"].collidepoint(event.pos):
+        vendor_tab = "buy"
+    elif "sell_tab" in buy_button_rects and buy_button_rects["sell_tab"].collidepoint(event.pos):
+        vendor_tab = "sell"
+    elif vendor_tab == "buy":
+        _handle_buy_transactions(event, assets)
+    elif vendor_tab == "sell":
+        _handle_sell_transactions(event, assets)
+
+def _handle_buy_transactions(event, assets):
+    """Handle buying items from vendor."""
+    shop_items = get_shop_items(assets)
+    coin_count = get_item_count("Coin")
+    
+    for item_name, button_rect in buy_button_rects.items():
+        if item_name in ["buy_tab", "sell_tab"]:
+            continue
+        if button_rect.collidepoint(event.pos):
+            item_data = shop_items[item_name]
+            if coin_count >= item_data["buy_price"]:
+                remove_item_from_inventory("Coin", item_data["buy_price"])
+                add_item_to_inventory(item_data["item"])
+                print(f"Bought {item_name} for {item_data['buy_price']} coins!")
+            else:
+                print("Not enough coins!")
+            break
+
+def _handle_sell_transactions(event, assets):
+    """Handle selling items to vendor."""
+    shop_items = get_shop_items(assets)
+    
+    for item_name, button_rect in sell_button_rects.items():
+        if button_rect.collidepoint(event.pos):
+            if get_item_count(item_name) > 0:
+                remove_item_from_inventory(item_name, 1)
+                item_data = shop_items[item_name]
+                for _ in range(item_data["sell_price"]):
+                    add_item_to_inventory(assets["coin_item"])
+                print(f"Sold {item_name} for {item_data['sell_price']} coins!")
+            break
+
+def _handle_crafting_clicks(event, assets):
+    """Handle crafting GUI clicks."""
+    global crafting_tab, is_crafting, crafting_timer, item_to_craft
+    
+    if smithing_tab_rect and smithing_tab_rect.collidepoint(event.pos):
+        crafting_tab = "smithing"
+    elif alchemy_tab_rect and alchemy_tab_rect.collidepoint(event.pos):
+        crafting_tab = "alchemy"
+    elif crafting_tab == "smithing":
+        _handle_smithing_crafting(event, assets)
+    elif crafting_tab == "alchemy":
+        _handle_alchemy_crafting(event, assets)
+
+def _handle_smithing_crafting(event, assets):
+    """Handle smithing crafting clicks."""
+    global is_crafting, crafting_timer, item_to_craft
+    
+    crafting_recipes = [
+        (axe_button_rect, "Log", 5, assets["axe_item"], "Axe"),
+        (pickaxe_button_rect, "Log", 10, assets["pickaxe_item"], "Pickaxe"),
+        (helmet_button_rect, "Stone", 8, assets["helmet_item"], "Helmet"),
+        (chest_button_rect, "Stone", 15, assets["chest_item"], "Chest Armor"),
+        (boots_button_rect, "Stone", 6, assets["boots_item"], "Boots")
+    ]
+    
+    for button_rect, material, cost, item_obj, item_name in crafting_recipes:
+        if button_rect and button_rect.collidepoint(event.pos):
+            if get_item_count(material) >= cost:
+                is_crafting = True
+                crafting_timer = 0
+                item_to_craft = item_obj
+                remove_item_from_inventory(material, cost)
+                print(f"Crafting {item_name}...")
+            else:
+                print(f"Not enough {material.lower()}!")
+            break
+
+def _handle_alchemy_crafting(event, assets):
+    """Handle alchemy crafting clicks."""
+    global is_crafting, crafting_timer, item_to_craft
+    
+    if potion_button_rect and potion_button_rect.collidepoint(event.pos):
+        if get_item_count("Flower") >= 3:
+            is_crafting = True
+            crafting_timer = 0
+            item_to_craft = assets["potion_item"]
+            remove_item_from_inventory("Flower", 3)
+            print("Brewing a Potion...")
+        else:
+            print("Not enough flowers!")
+
+def _update_npc_animations(dt):
+    """Update NPC idle animations."""
+    global npc_idle_timer, npc_idle_direction, npc_idle_offset_y
+    global miner_idle_timer, miner_idle_direction, miner_idle_offset_y
+    
+    # NPC idle animation
+    npc_idle_timer += dt
+    if npc_idle_timer >= 2000:
+        npc_idle_direction *= -1
+        npc_idle_timer = 0
+    
+    idle_progress = npc_idle_timer / 2000.0
+    npc_idle_offset_y = int(3 * math.sin(idle_progress * 3.14159) * npc_idle_direction)
+    
+    # Miner NPC idle animation
+    miner_idle_timer += dt
+    if miner_idle_timer >= 2200:
+        miner_idle_direction *= -1
+        miner_idle_timer = 0
+    
+    miner_idle_progress = miner_idle_timer / 2200.0
+    miner_idle_offset_y = int(4 * math.sin(miner_idle_progress * 3.14159) * miner_idle_direction)
+
+def _update_crafting(current_time, assets, dt):  
+    """Update crafting progress."""
+    global is_crafting, crafting_timer, item_to_craft
+    
+    if is_crafting:
+        crafting_timer += dt
+        
+        if crafting_timer >= CRAFTING_TIME_MS:
+            if add_item_to_inventory(item_to_craft):
+                print(f"Crafting complete! {item_to_craft.name} added to inventory.")
+            else:
+                print("Crafting failed: Inventory is full.")
+            is_crafting = False
+            item_to_craft = None
+            crafting_timer = 0
+
+
 
 def start_new_game():
     """Initialize a new game with default values."""
@@ -2103,7 +2203,6 @@ def load_assets():
             create_fallback_surface((WIDTH, HEIGHT), (139, 69, 19))
         ]
 
-
     # --- Items as objects ---
     log_item = Item("Log", log_image)
     axe_item = Item("Axe", axe_image, category="Weapon", damage=20)
@@ -2168,10 +2267,26 @@ def load_assets():
         # Boss
         "boss_door_frames": boss_door_frames,
     }
+    try:
+        chop_sound = pygame.mixer.Sound("chop.mp3")
+        chop_sound.set_volume(SFX_VOLUME)
+        print("Loaded chop.mp3 successfully")
+    except pygame.error as e:
+        print(f"Could not load chop.mp3: {e}")
+        chop_sound = None
+
+    try:
+        mine_sound = pygame.mixer.Sound("mine.mp3")
+        mine_sound.set_volume(SFX_VOLUME)
+        print("Loaded mine.mp3 successfully")
+    except pygame.error as e:
+        print(f"Could not load mine.mp3: {e}")
+        mine_sound = None
+
+    assets["chop_sound"] = chop_sound
+    assets["mine_sound"] = mine_sound
 
     return assets
-
-
 def load_boss_door_frames():
     """Load the boss door frames from the sprite sheet."""
     try:
@@ -2245,9 +2360,9 @@ def create_fallback_dungeon_with_enemies():
     # Add some ore deposits
     ore_positions = [(10, 10), (15, 8), (20, 12), (8, 18), (22, 20)]
     for x, y in ore_positions:
-        offset = (TILE_SIZE - (TILE_SIZE // 2)) // 2
-        map_data['ore_deposits'].append(pygame.Rect(x * TILE_SIZE + offset, y * TILE_SIZE + offset, TILE_SIZE // 2, TILE_SIZE // 2))
-    
+        map_data['ore_deposits'].append(
+            pygame.Rect(x, y, TILE_SIZE, TILE_SIZE)
+        )
     # Add enemy spawn points
     enemy_spawn_positions = [
         (10, 15, "orc"),
@@ -2494,15 +2609,12 @@ def spawn_enemy_in_dungeon():
     if len(enemies) >= MAX_ENEMIES:
         return
 
-    # Try to find a safe spawn position
     for attempt in range(50):
-        # Spawn in a smaller, safer area
         spawn_x = random.randint(5 * TILE_SIZE, (DUNGEON_SIZE - 5) * TILE_SIZE)
         spawn_y = random.randint(5 * TILE_SIZE, (DUNGEON_SIZE - 5) * TILE_SIZE)
         
         test_rect = pygame.Rect(spawn_x, spawn_y, PLAYER_SIZE, PLAYER_SIZE)
         
-        # Check if position is safe
         collision = False
         player_world_rect = get_player_world_rect()
         
@@ -2512,17 +2624,26 @@ def spawn_enemy_in_dungeon():
                 collision = True
                 break
         
-        # Check stones/ore
+        # Check stones
         if not collision:
             for stone in stone_rects:
                 if test_rect.colliderect(stone):
                     collision = True
                     break
         
-        # Check distance from player (don't spawn too close)
+        # Check other enemies
         if not collision:
-            distance = math.hypot(spawn_x - player_world_rect.centerx, 
-                                spawn_y - player_world_rect.centery)
+            for other in enemies:
+                if test_rect.colliderect(other.rect):
+                    collision = True
+                    break
+        
+        # Keep away from player
+        if not collision:
+            distance = math.hypot(
+                spawn_x - player_world_rect.centerx, 
+                spawn_y - player_world_rect.centery
+            )
             if distance < 150:
                 collision = True
         
@@ -2533,7 +2654,8 @@ def spawn_enemy_in_dungeon():
             print(f"Spawned orc at ({spawn_x}, {spawn_y})")
             return
     
-    print("Could not find safe spawn position for enemy")
+    print("❌ Could not find safe spawn position for enemy")
+
 
 def handle_combat(current_time):
     """Enhanced combat system that handles boss fights and regular enemies."""
@@ -2546,7 +2668,7 @@ def handle_combat(current_time):
     for enemy in enemies[:]:  # Create a copy to avoid modification during iteration
         if isinstance(enemy, Boss):
             # Special boss attack handling
-            if enemy.attack_player(player_world_rect, current_time):
+            if enemy.attack_player(player, current_time):
                 # Boss attacks can have different damage multipliers based on phase
                 base_damage = enemy.damage
                 
@@ -2571,35 +2693,9 @@ def handle_combat(current_time):
 
 def handle_player_death():
     """Handle what happens when player dies."""
-    global current_level, map_offset_x, map_offset_y, player_pos
-    print("You died!")
-    
-    # Always respawn at the world spawn point regardless of where player died
-    current_level = "world"
-    
-    # Get the player spawn point from map data
-    # You can either load it from your map file or use a default
-    try:
-        # Try to load spawn from current map
-        map_data = load_text_map("forest.txt")  # or whatever your main map is called
-        spawn_world_x, spawn_world_y = map_data['spawn_point']
-    except:
-        # Fallback spawn point if map loading fails
-        spawn_world_x = WIDTH // 2
-        spawn_world_y = HEIGHT // 2
-    
-    # Set camera to center on spawn location
-    map_offset_x = spawn_world_x - WIDTH // 2
-    map_offset_y = spawn_world_y - HEIGHT // 2
-    
-    # Player screen position stays centered
-    player_pos.center = (WIDTH // 2, HEIGHT // 2)
-    
-    # Restore some health and clear enemies
-    player.health = player.max_health // 2
-    enemies.clear()
-    
-    print(f"Respawned at player spawn ({spawn_world_x}, {spawn_world_y})")
+    global is_game_over
+    print("💀 Player has died!")
+    is_game_over = True  # This line is already there, good!
 
 def handle_boss_combat_feedback():
     """Add special visual effects and feedback for boss fights."""
@@ -2989,6 +3085,457 @@ def draw_level_up_notification(screen, assets):
     stats_rect = stats_surf.get_rect(center=(WIDTH // 2, HEIGHT // 2 + 10))
     screen.blit(stats_surf, stats_rect)
 
+# Helper functions to clean up the main function
+def _handle_other_resources(player_world_rect, assets):
+    """Handle mining and flower picking when player has axe."""
+    global equipment_slots, is_mining, mining_target_stone, mining_timer, current_direction
+    
+    if equipment_slots["weapon"] and equipment_slots["weapon"].name == "Pickaxe":
+        for stone in list(stone_rects):
+            if player_world_rect.colliderect(stone.inflate(20, 20)):
+                is_mining = True
+                mining_target_stone = stone
+                mining_timer = 0
+                current_direction = "idle"
+                break
+        else:
+            _handle_flower_picking(player_world_rect, assets)
+    else:
+        _handle_flower_picking(player_world_rect, assets)
+
+def _handle_flower_picking(player_world_rect, assets):
+    """Handle flower picking."""
+    for fx, fy, idx in list(flower_tiles):
+        flower_rect = pygame.Rect(fx, fy, 30, 30)
+        if player_world_rect.colliderect(flower_rect.inflate(10, 10)):
+            add_item_to_inventory(assets["flower_item"])
+            flower_tiles.remove((fx, fy, idx))
+            print("Picked a flower!")
+            break
+
+def _handle_mouse_clicks(event, assets, screen):
+    """Handle all mouse click events."""
+    if show_vendor_gui:
+        _handle_vendor_clicks(event, assets)
+    elif show_crafting and not is_crafting:
+        _handle_crafting_clicks(event, assets)
+    elif show_equipment:
+        equipment_slot_rects = draw_equipment_panel(screen, assets)
+        handle_equipment_click(event.pos, equipment_slot_rects)
+    elif show_inventory:
+        handle_inventory_click(event.pos)
+
+def _handle_vendor_clicks(event, assets):
+    """Handle vendor GUI clicks."""
+    global vendor_tab
+    
+    if "buy_tab" in buy_button_rects and buy_button_rects["buy_tab"].collidepoint(event.pos):
+        vendor_tab = "buy"
+    elif "sell_tab" in buy_button_rects and buy_button_rects["sell_tab"].collidepoint(event.pos):
+        vendor_tab = "sell"
+    elif vendor_tab == "buy":
+        _handle_buy_transactions(event, assets)
+    elif vendor_tab == "sell":
+        _handle_sell_transactions(event, assets)
+
+def _handle_buy_transactions(event, assets):
+    """Handle buying items from vendor."""
+    shop_items = get_shop_items(assets)
+    coin_count = get_item_count("Coin")
+    
+    for item_name, button_rect in buy_button_rects.items():
+        if item_name in ["buy_tab", "sell_tab"]:
+            continue
+        if button_rect.collidepoint(event.pos):
+            item_data = shop_items[item_name]
+            if coin_count >= item_data["buy_price"]:
+                remove_item_from_inventory("Coin", item_data["buy_price"])
+                add_item_to_inventory(item_data["item"])
+                print(f"Bought {item_name} for {item_data['buy_price']} coins!")
+            else:
+                print("Not enough coins!")
+            break
+
+def _handle_sell_transactions(event, assets):
+    """Handle selling items to vendor."""
+    shop_items = get_shop_items(assets)
+    
+    for item_name, button_rect in sell_button_rects.items():
+        if button_rect.collidepoint(event.pos):
+            if get_item_count(item_name) > 0:
+                remove_item_from_inventory(item_name, 1)
+                item_data = shop_items[item_name]
+                for _ in range(item_data["sell_price"]):
+                    add_item_to_inventory(assets["coin_item"])
+                print(f"Sold {item_name} for {item_data['sell_price']} coins!")
+            break
+
+def _handle_crafting_clicks(event, assets):
+    """Handle crafting GUI clicks."""
+    global crafting_tab, is_crafting, crafting_timer, item_to_craft
+    
+    if smithing_tab_rect and smithing_tab_rect.collidepoint(event.pos):
+        crafting_tab = "smithing"
+    elif alchemy_tab_rect and alchemy_tab_rect.collidepoint(event.pos):
+        crafting_tab = "alchemy"
+    elif crafting_tab == "smithing":
+        _handle_smithing_crafting(event, assets)
+    elif crafting_tab == "alchemy":
+        _handle_alchemy_crafting(event, assets)
+
+def _handle_smithing_crafting(event, assets):
+    """Handle smithing crafting clicks."""
+    global is_crafting, crafting_timer, item_to_craft
+    
+    crafting_recipes = [
+        (axe_button_rect, "Log", 5, assets["axe_item"], "Axe"),
+        (pickaxe_button_rect, "Log", 10, assets["pickaxe_item"], "Pickaxe"),
+        (helmet_button_rect, "Stone", 8, assets["helmet_item"], "Helmet"),
+        (chest_button_rect, "Stone", 15, assets["chest_item"], "Chest Armor"),
+        (boots_button_rect, "Stone", 6, assets["boots_item"], "Boots")
+    ]
+    
+    for button_rect, material, cost, item_obj, item_name in crafting_recipes:
+        if button_rect and button_rect.collidepoint(event.pos):
+            if get_item_count(material) >= cost:
+                is_crafting = True
+                crafting_timer = 0
+                item_to_craft = item_obj
+                remove_item_from_inventory(material, cost)
+                print(f"Crafting {item_name}...")
+            else:
+                print(f"Not enough {material.lower()}!")
+            break
+
+def _handle_alchemy_crafting(event, assets):
+    """Handle alchemy crafting clicks."""
+    global is_crafting, crafting_timer, item_to_craft
+    
+    if potion_button_rect and potion_button_rect.collidepoint(event.pos):
+        if get_item_count("Flower") >= 3:
+            is_crafting = True
+            crafting_timer = 0
+            item_to_craft = assets["potion_item"]
+            remove_item_from_inventory("Flower", 3)
+            print("Brewing a Potion...")
+        else:
+            print("Not enough flowers!")
+
+def _update_npc_animations(dt):
+    """Update NPC idle animations."""
+    global npc_idle_timer, npc_idle_direction, npc_idle_offset_y
+    global miner_idle_timer, miner_idle_direction, miner_idle_offset_y
+    
+    # NPC idle animation
+    npc_idle_timer += dt
+    if npc_idle_timer >= 2000:
+        npc_idle_direction *= -1
+        npc_idle_timer = 0
+    
+    idle_progress = npc_idle_timer / 2000.0
+    npc_idle_offset_y = int(3 * math.sin(idle_progress * 3.14159) * npc_idle_direction)
+    
+    # Miner NPC idle animation
+    miner_idle_timer += dt
+    if miner_idle_timer >= 2200:
+        miner_idle_direction *= -1
+        miner_idle_timer = 0
+    
+    miner_idle_progress = miner_idle_timer / 2200.0
+    miner_idle_offset_y = int(4 * math.sin(miner_idle_progress * 3.14159) * miner_idle_direction)
+
+def _update_crafting(current_time, assets, dt):  
+    """Update crafting progress."""
+    global is_crafting, crafting_timer, item_to_craft
+    
+    if is_crafting:
+        crafting_timer += dt
+        
+        if crafting_timer >= CRAFTING_TIME_MS:
+            if add_item_to_inventory(item_to_craft):
+                print(f"Crafting complete! {item_to_craft.name} added to inventory.")
+            else:
+                print("Crafting failed: Inventory is full.")
+            is_crafting = False
+            item_to_craft = None
+            crafting_timer = 0
+
+def _update_animations(dt, player_frames, attack_frames, chopping_frames, attack_animation_duration, assets):
+    """Update player animations."""
+    global is_attacking, attack_timer, player_frame_timer, player_frame_index, current_direction
+    global is_chopping, chopping_timer, chopping_target_tree, is_swinging
+    global is_mining, mining_timer, mining_target_stone
+    global swing_delay, idle_chop_delay, player_frame_delay
+    global chop_sound_played, mine_sound_played
+    current_time = pygame.time.get_ticks()
+
+    # Attack animation
+    if is_attacking:
+        attack_timer += dt
+        player_frame_timer += dt
+        if player_frame_timer >= swing_delay:
+            attack_direction = last_direction if last_direction in attack_frames else "down"
+            max_frames = len(attack_frames[attack_direction])
+            player_frame_index = (player_frame_index + 1) % max_frames
+            player_frame_timer = 0
+
+        if attack_timer >= attack_animation_duration:
+            is_attacking = False
+            attack_timer = 0
+            player_frame_index = 0
+            current_direction = "idle"
+
+    # Chopping animation
+    elif is_chopping:
+        chopping_timer += dt
+        player_frame_timer += dt
+        chop_sound = assets.get("chop_sound")
+
+        if player_frame_timer > idle_chop_delay:
+            is_swinging = True
+            if player_frame_timer >= swing_delay:
+                chop_direction = last_direction if last_direction in chopping_frames else "down"
+                max_frames = len(chopping_frames[chop_direction])
+                player_frame_index = (player_frame_index + 1) % max_frames
+                player_frame_timer = 0
+
+                # 🔊 Play sound only on the "impact" frame
+                if chop_sound and player_frame_index == 1:  # adjust frame index as needed
+                    try:
+                        chop_sound.play()
+                    except Exception as e:
+                        print(f"Could not play chop sound: {e}")
+
+        if chopping_timer >= CHOPPING_DURATION:
+            _complete_chopping(current_time, assets)
+
+    # Mining animation  
+    elif is_mining:
+        global mine_sound_played
+
+        mining_timer += dt
+        player_frame_timer += dt
+        mine_sound = assets.get("mine_sound")
+
+        if player_frame_timer > idle_chop_delay:
+            is_swinging = True
+            if player_frame_timer >= swing_delay:
+                chop_direction = last_direction if last_direction in chopping_frames else "down"
+                max_frames = len(chopping_frames[chop_direction])
+                player_frame_index = (player_frame_index + 1) % max_frames
+                player_frame_timer = 0
+
+                # 🔊 Play sound only once per mining action
+                if mine_sound and not mine_sound_played:
+                    try:
+                        mine_sound.play()
+                        mine_sound_played = True
+                    except Exception as e:
+                        print(f"Could not play mine sound: {e}")
+
+        if mining_timer >= MINING_DURATION:
+            _complete_mining(current_time, assets)
+            mine_sound.stop()
+            mine_sound_played = False   # reset for the next mining action
+
+    # Normal animation state update
+    else:
+        player_frame_timer += dt
+        if current_direction == "idle":
+            player_frame_index = 0
+        elif player_frame_timer > player_frame_delay:
+            frame_set = player_frames.get(current_direction, player_frames["idle"])
+            max_frames = len(frame_set)
+            player_frame_index = (player_frame_index + 1) % max_frames
+            player_frame_timer = 0
+
+def _complete_chopping(current_time, assets):
+    global is_chopping, is_swinging, chopping_timer, chopping_target_tree, current_direction
+    global chop_sound_played
+
+    if chopping_target_tree and chopping_target_tree in tree_rects:
+        # Remove the tree
+        tree_rects.remove(chopping_target_tree)
+
+        # Track chopped tree
+        if 'chopped_trees' not in globals():
+            globals()['chopped_trees'] = {}
+        chopped_trees[(chopping_target_tree.x, chopping_target_tree.y,
+                       chopping_target_tree.width, chopping_target_tree.height)] = current_time
+
+        # Give reward
+        if "log_item" in assets:
+            add_item_to_inventory(assets["log_item"])
+        else:
+            print("⚠ log_item missing from assets!")
+
+        print("🌲 Chopped a tree! Gained a log.")
+
+    # Reset chopping state
+    is_chopping = False
+    is_swinging = False
+    chopping_timer = 0
+    chopping_target_tree = None
+    current_direction = "idle"
+
+def _complete_mining(current_time, assets):
+    """Complete stone/ore mining action."""
+    global is_mining, is_swinging, mining_timer, mining_target_stone, current_direction
+    global mine_sound_played
+
+    if mining_target_stone in stone_rects:
+        stone_rects.remove(mining_target_stone)
+        chopped_stones[(mining_target_stone.x, mining_target_stone.y,
+                       mining_target_stone.width, mining_target_stone.height)] = current_time
+        
+        # Play mine sound
+        if assets["mine_sound"]:
+            assets["mine_sound"].play()
+        
+        if current_level == "dungeon":
+            add_item_to_inventory(assets["ore_item"])
+            print("Mined ore!")
+        else:
+            add_item_to_inventory(assets["stone_item"])
+            print("Mined a stone!")
+    
+    is_mining = False
+    is_swinging = False
+    mining_timer = 0
+    mining_target_stone = None
+    current_direction = "idle"
+
+def _is_ui_blocking_movement():
+    """Check if any UI is blocking player movement."""
+    return (show_inventory or show_crafting or show_equipment or 
+            is_chopping or is_mining or is_attacking or 
+            show_npc_dialog or show_miner_dialog)
+
+def _handle_player_movement(dx, dy):
+    """Handle player movement based on current level."""
+    global map_offset_x, map_offset_y, player_pos, last_direction, current_direction
+    
+    if current_level == "world" or current_level == "dungeon":
+        new_player_world_rect = get_player_world_rect().move(dx, dy)
+        if not handle_collision(new_player_world_rect):
+            map_offset_x += dx
+            map_offset_y += dy
+            if dx != 0 or dy != 0:
+                last_direction = current_direction
+    else:  # current_level == "house" or "boss_room"
+        new_player_pos = player_pos.move(dx, dy)
+        if not handle_collision(new_player_pos):
+            player_pos = new_player_pos
+            if dx != 0 or dy != 0:
+                last_direction = current_direction
+
+def draw_dungeon(screen, assets, enemy_frames):
+    """Draws the dungeon level with enemies and boss door."""
+    dungeon_width = 30
+    dungeon_height = 16
+    
+    # Draw floor tiles
+    for x in range(dungeon_width):
+        for y in range(dungeon_height):
+            screen.blit(assets["dungeon_floor"], (x * TILE_SIZE - map_offset_x, y * TILE_SIZE - map_offset_y))
+    
+    # Draw dungeon walls
+    for wall in dungeon_walls:
+        screen.blit(assets["dungeon_wall"], (wall.x - map_offset_x, wall.y - map_offset_y))
+    
+    # Draw ore deposits
+    for ore in stone_rects:
+        screen.blit(assets["ore_img"], (ore.x - map_offset_x, ore.y - map_offset_y))
+    
+    # Draw boss door if it exists
+    if boss1_portal and current_level == "dungeon":
+        boss_door_image = assets["boss_door_frames"]["closed"]
+        screen.blit(boss_door_image, (boss1_portal.x - map_offset_x, boss1_portal.y - map_offset_y))
+    
+    # Draw enemies
+    for enemy in enemies:
+        enemy_screen_rect = world_to_screen_rect(enemy.rect)
+        if -100 <= enemy_screen_rect.x <= WIDTH + 100 and -100 <= enemy_screen_rect.y <= HEIGHT + 100:
+            screen.blit(enemy.image, enemy_screen_rect)
+        
+            # Draw enemy health bar if damaged
+            if enemy.health < enemy.max_health:
+                bar_y = enemy_screen_rect.y - 10
+                draw_health_bar(screen, enemy_screen_rect.x, bar_y, enemy.health, enemy.max_health, enemy.rect.width, 5)
+    # Draw loot drops
+    for loot in loot_drops:
+        loot.draw(screen, map_offset_x, map_offset_y)
+    # Draw exit portal
+    if dungeon_exit:
+        screen.blit(assets["portal"], (dungeon_exit.x - map_offset_x, dungeon_exit.y - map_offset_y))
+    
+    # Update and draw floating texts
+    for text in floating_texts[:]:
+        text.update()
+        if not text.is_alive():
+            floating_texts.remove(text)
+        else:
+            text.draw(screen, assets["small_font"], map_offset_x, map_offset_y)
+
+def _draw_game_world(screen, assets, enemy_frames):
+    """Draw the appropriate game world based on current level."""
+    screen.fill((0, 0, 0))
+    
+    if current_level == "world":
+        draw_world(screen, assets)
+    elif current_level == "dungeon":
+        draw_dungeon(screen, assets, enemy_frames)
+    elif current_level == "boss_room":
+        draw_boss_room(screen, assets)
+    else:  # house
+        screen.blit(assets["interiors"][current_house_index], (0, 0))
+
+def _draw_player(screen, player_frames, attack_frames, chopping_frames):
+    """Draw the player with appropriate animations."""
+    player_size_current = player_pos.width
+    
+    if is_attacking:
+        attack_direction = last_direction if last_direction in attack_frames else "down"
+        frame_index = min(player_frame_index, len(attack_frames[attack_direction]) - 1)
+        scaled_frame = pygame.transform.scale(attack_frames[attack_direction][frame_index], 
+                                            (player_size_current, player_size_current))
+        screen.blit(scaled_frame, player_pos)
+    elif is_chopping or is_mining:
+        chop_direction = last_direction if last_direction in chopping_frames else "down"
+        frame_index = min(player_frame_index, len(chopping_frames[chop_direction]) - 1)
+        scaled_frame = pygame.transform.scale(chopping_frames[chop_direction][frame_index], 
+                                            (player_size_current, player_size_current))
+        screen.blit(scaled_frame, player_pos)
+    else:
+        frame_set = player_frames.get(current_direction, player_frames["idle"])
+        frame_index = min(player_frame_index, len(frame_set) - 1)
+        scaled_frame = pygame.transform.scale(frame_set[frame_index], 
+                                            (player_size_current, player_size_current))
+        screen.blit(scaled_frame, player_pos)
+
+def _draw_ui_elements(screen, assets, player_frames, attack_frames, chopping_frames, is_hovering):
+    """Draw all UI elements."""
+    draw_player_stats(screen, assets, player_frames, attack_frames, chopping_frames)
+    draw_experience_bar(screen, assets)
+    draw_hud(screen, assets)
+    draw_tooltip_for_nearby_objects(screen, assets["small_font"])
+    draw_npc_dialog(screen, assets)
+    draw_miner_dialog(screen, assets)
+
+    if show_pause_menu:
+        draw_pause_menu(screen, assets)
+    if show_inventory:
+        draw_inventory(screen, assets)
+    if show_crafting:
+        draw_crafting_panel(screen, assets, is_hovering)
+    if show_equipment:
+        draw_equipment_panel(screen, assets)
+    if show_vendor_gui:
+        draw_vendor_gui(screen, assets)
+    
+    draw_level_up_notification(screen, assets)
+    draw_player_coordinates(screen, assets["small_font"])
+
 def draw_experience_bar(screen, assets):
     """Draws the experience/level progress bar at the bottom of the screen."""
     bar_height = 25
@@ -3193,7 +3740,7 @@ def draw_buy_content(screen, assets, panel_x, content_y, panel_width, shop_items
         pygame.draw.rect(screen, button_color, buy_button)
         pygame.draw.rect(screen, (255, 255, 255), buy_button, 1)
         
-        button_text = "Buy" if can_afford else "No Coins"
+        button_text = "Buy" if can_afford else "X"
         text_surf = assets["small_font"].render(button_text, True, (255, 255, 255))
         screen.blit(text_surf, text_surf.get_rect(center=buy_button.center))
         
@@ -3498,8 +4045,8 @@ def draw_crafting_panel(screen, assets, is_hovering):
     global axe_button_rect, pickaxe_button_rect, potion_button_rect, alchemy_tab_rect, smithing_tab_rect
 
     panel_rect = pygame.Rect(CRAFTING_X, CRAFTING_Y, CRAFTING_PANEL_WIDTH, CRAFTING_PANEL_HEIGHT)
-    pygame.draw.rect(screen, (101, 67, 33), panel_rect)
-
+    pygame.draw.rect(screen, (80, 50, 20), panel_rect, border_radius=10)
+    pygame.draw.rect(screen, (220, 220, 220), panel_rect, 3, border_radius=10)
     # Header
     header_rect = pygame.Rect(CRAFTING_X, CRAFTING_Y, CRAFTING_PANEL_WIDTH, 35)
     pygame.draw.rect(screen, (50, 33, 16), header_rect)
@@ -3528,6 +4075,7 @@ def draw_crafting_panel(screen, assets, is_hovering):
     pygame.draw.rect(screen, (255, 255, 255), alchemy_tab_rect, 2)
     alchemy_text = assets["small_font"].render("Alchemy", True, (255, 255, 255))
     screen.blit(alchemy_text, alchemy_text.get_rect(center=alchemy_tab_rect.center))
+
 
     # Content area
     content_y = tab_y + tab_height + 10
@@ -3641,216 +4189,144 @@ def draw_alchemy_content(screen, assets, is_hovering, content_y):
     text_surface = assets["small_font"].render(text_to_display, True, (255, 255, 255))
     screen.blit(text_surface, text_surface.get_rect(center=potion_button_rect.center))
 def draw_equipment_panel(screen, assets):
-    """Draws the expanded equipment GUI with 2 rows, 4 columns and stats display."""
-    global equipment_slots  # Access global equipment slots
+    """Draws a polished equipment GUI with 2 rows, 4 columns and a styled stats display."""
+    global equipment_slots
 
     # --- Panel background ---
-    panel_rect = pygame.Rect(EQUIPMENT_X, EQUIPMENT_Y, EQUIPMENT_PANEL_WIDTH + 100, EQUIPMENT_PANEL_HEIGHT + 40)
-    pygame.draw.rect(screen, (101, 67, 33), panel_rect)          # Dark wood background
-    pygame.draw.rect(screen, (255, 255, 255), panel_rect, 3)     # White outline
+    panel_rect = pygame.Rect(
+        EQUIPMENT_X, EQUIPMENT_Y,
+        EQUIPMENT_PANEL_WIDTH + 100,
+        EQUIPMENT_PANEL_HEIGHT + 60
+    )
+    # Dark wood background with rounded corners
+    pygame.draw.rect(screen, (80, 50, 20), panel_rect, border_radius=10)
+    # Outer border
+    pygame.draw.rect(screen, (220, 220, 220), panel_rect, 3, border_radius=10)
 
     # --- Header ---
     header_rect = pygame.Rect(EQUIPMENT_X, EQUIPMENT_Y, panel_rect.width, 40)
-    pygame.draw.rect(screen, (50, 33, 16), header_rect)
-    header_text = assets["font"].render("Equipment", True, (255, 215, 0))  # Gold text
+    pygame.draw.rect(screen, (40, 25, 10), header_rect, border_radius=6)
+    header_text = assets["font"].render("Equipment", True, (255, 215, 0))  # gold text
     screen.blit(header_text, header_text.get_rect(center=header_rect.center))
 
-    # --- Equipment slot layout ---
+    # --- Slot layout ---
     slot_names = [
         ["weapon", "helmet", "armor", "boots"],   # Top row
         ["ring1", "ring2", "amulet", "shield"]    # Bottom row
     ]
-
     slot_labels = {
         "weapon": "Weapon", "helmet": "Helmet", "armor": "Chest", "boots": "Boots",
         "ring1": "Ring", "ring2": "Ring", "amulet": "Amulet", "shield": "Shield"
     }
 
     slot_rects = {}
-    start_y = EQUIPMENT_Y + 60
+    start_y = EQUIPMENT_Y + 55
 
     for row in range(EQUIPMENT_ROWS):
         for col in range(EQUIPMENT_COLS):
-            slot_x = EQUIPMENT_X + EQUIPMENT_GAP + col * (EQUIPMENT_SLOT_SIZE + EQUIPMENT_GAP + 20)
-            slot_y = start_y + row * (EQUIPMENT_SLOT_SIZE + EQUIPMENT_GAP + 28)
+            slot_x = EQUIPMENT_X + EQUIPMENT_GAP + col * (EQUIPMENT_SLOT_SIZE + EQUIPMENT_GAP + 30)
+            slot_y = start_y + row * (EQUIPMENT_SLOT_SIZE + EQUIPMENT_GAP + 35)
 
             slot_rect = pygame.Rect(slot_x, slot_y, EQUIPMENT_SLOT_SIZE, EQUIPMENT_SLOT_SIZE)
             slot_name = slot_names[row][col]
 
-            # Slot background
-            pygame.draw.rect(screen, (60, 60, 60), slot_rect)       # Dark slot bg
-            pygame.draw.rect(screen, (200, 200, 200), slot_rect, 2) # Silver outline
+            # Slot background with subtle bevel
+            pygame.draw.rect(screen, (70, 70, 70), slot_rect, border_radius=6)
+            pygame.draw.rect(screen, (180, 180, 180), slot_rect, 2, border_radius=6)
 
             # Draw equipped item
             equipped_item = equipment_slots.get(slot_name)
             if equipped_item and equipped_item.image:
-                item_image = pygame.transform.scale(equipped_item.image, (EQUIPMENT_SLOT_SIZE, EQUIPMENT_SLOT_SIZE))
-                screen.blit(item_image, slot_rect)
+                item_image = pygame.transform.smoothscale(
+                    equipped_item.image,
+                    (EQUIPMENT_SLOT_SIZE - 4, EQUIPMENT_SLOT_SIZE - 4)
+                )
+                screen.blit(item_image, item_image.get_rect(center=slot_rect.center))
 
             # Slot label
-            label_text = assets["small_font"].render(slot_labels[slot_name], True, (255, 255, 255))
+            label_text = assets["small_font"].render(slot_labels[slot_name], True, (230, 230, 230))
             label_rect = label_text.get_rect(centerx=slot_rect.centerx, top=slot_rect.bottom + 4)
             screen.blit(label_text, label_rect)
 
-            # Store for click handling
             slot_rects[slot_name] = slot_rect
 
     # --- Stats box ---
-    stats_y = start_y + (EQUIPMENT_ROWS * (EQUIPMENT_SLOT_SIZE + EQUIPMENT_GAP + 28)) + 10
-    stats_rect = pygame.Rect(EQUIPMENT_X + 10, stats_y, panel_rect.width - 20, 60)
-    pygame.draw.rect(screen, (30, 30, 30), stats_rect)      # Dark gray
-    pygame.draw.rect(screen, (180, 180, 180), stats_rect, 2)
+    stats_y = start_y + (EQUIPMENT_ROWS * (EQUIPMENT_SLOT_SIZE + EQUIPMENT_GAP + 35)) + 15
+    stats_rect = pygame.Rect(EQUIPMENT_X + 10, stats_y, panel_rect.width - 20, 70)
+    pygame.draw.rect(screen, (25, 25, 25), stats_rect, border_radius=8)
+    pygame.draw.rect(screen, (160, 160, 160), stats_rect, 2, border_radius=8)
 
     # --- Calculate equipment bonuses ---
-    total_damage_bonus = 0
-    total_defense_bonus = 0
+    total_damage_bonus = sum(getattr(item, 'damage', 0) for item in equipment_slots.values() if item)
+    total_defense_bonus = sum(getattr(item, 'defense', 0) for item in equipment_slots.values() if item)
 
-    for item in equipment_slots.values():
-        if item:
-            total_damage_bonus += getattr(item, 'damage', 0)
-            total_defense_bonus += getattr(item, 'defense', 0)
-    
     player_total_defense = player.get_total_defense()
     equipped_weapon = equipment_slots.get("weapon")
     weapon_name = equipped_weapon.name if equipped_weapon else "None"
-    # --- Render stats text (multi-line) ---
+
+    # --- Render stats text with icons ---
     stats_lines = [
-        f"Main Hand: {weapon_name} | Damage Bonus: +{total_damage_bonus}",
-        f"Defense: {player_total_defense} (+{total_defense_bonus} from equipment)"
+        (assets.get("sword_icon"), f"Main Hand: {weapon_name}  |  +{total_damage_bonus} Damage"),
+        (assets.get("shield_icon"), f"Defense: {player_total_defense} (+{total_defense_bonus})")
     ]
 
-    line_height = assets["small_font"].get_height() + 2
-    for i, line in enumerate(stats_lines):
-        text_surf = assets["small_font"].render(line, True, (255, 255, 255))
-        text_rect = text_surf.get_rect(midleft=(stats_rect.left + 10, stats_rect.top + 10 + i * line_height))
+    line_height = assets["small_font"].get_height() + 6
+    for i, (icon, line) in enumerate(stats_lines):
+        y = stats_rect.top + 10 + i * line_height
+        if icon:
+            screen.blit(icon, (stats_rect.left + 10, y))
+        text_surf = assets["small_font"].render(line, True, (240, 240, 240))
+        text_rect = text_surf.get_rect(midleft=(stats_rect.left + 40, y + 10))
         screen.blit(text_surf, text_rect)
 
     return slot_rects
 
+hud_buttons = {}
+
 def draw_hud(screen, assets):
-    """Draws the main HUD elements (icons)."""
+    global hud_buttons
+    hud_buttons = {}
+
     icons = [
-        (assets["backpack_icon"], "[ i ]", WIDTH - 40),
-        (assets["crafting_icon"], "[ c ]", WIDTH - 80),
-        (assets["equipment_icon"], "[ r ]", WIDTH - 120)
+        ("inventory", assets["backpack_icon"], "", "Inventory"),
+        ("crafting", assets["crafting_icon"], "", "Crafting"),
+        ("equipment", assets["equipment_icon"], "", "Equipment")
     ]
-    for icon, label, x_pos in icons:
-        icon_rect = icon.get_rect(centerx=x_pos, top=10)
+
+    mouse_pos = pygame.mouse.get_pos()
+
+    spacing = 70  # a little more spacing since icons are bigger
+    start_x = WIDTH - 50
+    y_pos = HEIGHT - 70   # bottom‑right corner
+
+    for i, (name, icon, label, tooltip) in enumerate(icons):
+        # --- Scale icon up slightly ---
+        scale_factor = 1.3   # 30% bigger
+        new_size = (int(icon.get_width() * scale_factor),
+                    int(icon.get_height() * scale_factor))
+        icon_scaled = pygame.transform.smoothscale(icon, new_size)
+
+        x_pos = start_x - i * spacing
+        icon_rect = icon_scaled.get_rect(centerx=x_pos, bottom=y_pos)
+
+        # Draw icon and label
+        screen.blit(icon_scaled, icon_rect)
         label_text = assets["small_font"].render(label, True, (255, 255, 255))
         label_rect = label_text.get_rect(centerx=icon_rect.centerx, top=icon_rect.bottom + 5)
-        screen.blit(icon, icon_rect)
         screen.blit(label_text, label_rect)
 
-def draw_ability_bar(screen, assets):
-    """Enhanced ability bar with better visuals and more abilities."""
-    current_time = pygame.time.get_ticks()
-    
-    # Define abilities
-    abilities = [
-        {
-            'key': '1',
-            'name': 'Attack',
-            'color': (200, 50, 50),
-            'available': player.can_attack(current_time) and not is_attacking,
-            'cooldown': max(0, COMBAT_COOLDOWN - (current_time - player.last_attack_time)) if not player.can_attack(current_time) else 0
-        },
-        {
-            'key': '2', 
-            'name': 'Block',
-            'color': (50, 50, 200),
-            'available': not is_attacking,
-            'cooldown': 0
-        },
-        {
-            'key': '3',
-            'name': 'Dash',
-            'color': (50, 200, 200),
-            'available': (current_time - dash_cooldown > 3000) and not is_attacking,
-            'cooldown': max(0, 3000 - (current_time - dash_cooldown)) if current_time - dash_cooldown <= 3000 else 0
-        },
-        {
-            'key': 'H',
-            'name': 'Heal',
-            'color': (50, 200, 50),
-            'available': get_item_count("Potion") > 0,
-            'cooldown': 0
-        }
-    ]
-    
-    # Bar setup - bigger buttons
-    button_size = 50
-    button_gap = 12
-    bar_width = len(abilities) * button_size + (len(abilities) - 1) * button_gap
-    bar_height = button_size + 25
-    
-    # Position at bottom center
-    bar_x = (WIDTH - bar_width) // 2
-    bar_y = HEIGHT - bar_height - 80
-    
-    # Background panel
-    panel_rect = pygame.Rect(bar_x - 15, bar_y - 15, bar_width + 30, bar_height + 30)
-    pygame.draw.rect(screen, (30, 30, 40), panel_rect)
-    pygame.draw.rect(screen, (255, 255, 255), panel_rect, 2)
-    
-    # Draw ability buttons
-    for i, ability in enumerate(abilities):
-        button_x = bar_x + i * (button_size + button_gap)
-        button_y = bar_y
-        button_rect = pygame.Rect(button_x, button_y, button_size, button_size)
-        
-        # Button color based on availability
-        if ability['available']:
-            button_color = ability['color']
-            text_color = (255, 255, 255)
-            display_text = ability['key']
-        else:
-            button_color = (60, 60, 60)
-            text_color = (150, 150, 150)
-            if ability['cooldown'] > 0:
-                cooldown_seconds = ability['cooldown'] / 1000.0
-                display_text = f"{cooldown_seconds:.1f}"
-            else:
-                display_text = ability['key']
-        
-        # Draw button
-        pygame.draw.rect(screen, button_color, button_rect)
-        pygame.draw.rect(screen, (200, 200, 200), button_rect, 2)
-        
-        # Cooldown overlay
-        if ability['cooldown'] > 0:
-            if ability['name'] == 'Attack':
-                cooldown_ratio = ability['cooldown'] / COMBAT_COOLDOWN
-            elif ability['name'] == 'Dash':
-                cooldown_ratio = ability['cooldown'] / 3000
-            else:
-                cooldown_ratio = 0
-                
-            overlay_height = int(button_size * cooldown_ratio)
-            if overlay_height > 0:
-                overlay_rect = pygame.Rect(button_x, button_y + (button_size - overlay_height), 
-                                         button_size, overlay_height)
-                overlay = pygame.Surface((button_size, overlay_height))
-                overlay.set_alpha(120)
-                overlay.fill((0, 0, 0))
-                screen.blit(overlay, overlay_rect)
-        
-        # Button text
-        text_surf = assets["font"].render(display_text, True, text_color)
-        text_rect = text_surf.get_rect(center=button_rect.center)
-        screen.blit(text_surf, text_rect)
-        
-        # Ability name
-        name_surf = assets["small_font"].render(ability['name'], True, (200, 200, 200))
-        name_rect = name_surf.get_rect(centerx=button_rect.centerx, top=button_rect.bottom + 3)
-        screen.blit(name_surf, name_rect)
-        
-        # Show potion count for heal
-        if ability['name'] == 'Heal':
-            potion_count = get_item_count("Potion")
-            if potion_count > 0:
-                count_surf = assets["small_font"].render(str(potion_count), True, (255, 255, 0))
-                count_rect = count_surf.get_rect(bottomright=(button_rect.right - 2, button_rect.bottom - 2))
-                screen.blit(count_surf, count_rect)
+        hud_buttons[name] = icon_rect
+
+        # Hover tooltip
+        if icon_rect.collidepoint(mouse_pos):
+            tooltip_text = assets["small_font"].render(tooltip, True, (255, 255, 0))
+            tooltip_rect = tooltip_text.get_rect(centerx=icon_rect.centerx, bottom=icon_rect.top - 5)
+            bg_rect = tooltip_rect.inflate(6, 4)
+            pygame.draw.rect(screen, (0, 0, 0), bg_rect)
+            screen.blit(tooltip_text, tooltip_rect)
+
+
+
 # --- MAIN GAME LOGIC ---
 def handle_movement(keys):
     global current_direction, last_direction, player_movement_history
@@ -4140,7 +4616,7 @@ def handle_boss_door(player_world_rect, assets):
             print("Entered the Boss Room!")
 # UPDATED handle_playing_state function - Replace the entire function
 def handle_playing_state(screen, assets, dt):
-    """Handle the main game when actually playing - FIXED VERSION."""
+    """Handle the main game when actually playing - WITH PROPER GAME OVER."""
     global map_offset_x, map_offset_y, current_level, current_house_index
     global player_frame_index, player_frame_timer, current_direction, last_direction
     global show_inventory, show_crafting, show_equipment, crafting_tab
@@ -4159,17 +4635,17 @@ def handle_playing_state(screen, assets, dt):
     global equipment_slots
     global show_pause_menu, pause_menu_selected_option
     global walk_sound
-    
+    global is_game_over
+
     # Load frames if not already loaded
     if not hasattr(handle_playing_state, 'frames_loaded'):
         global enemy_frames  
         handle_playing_state.player_frames = load_player_frames()
         handle_playing_state.chopping_frames = load_chopping_frames()
         handle_playing_state.attack_frames = load_attack_frames()
-        handle_playing_state.enemy_frames = load_enemy_frames()  # FIX: assign to function
-        enemy_frames = handle_playing_state.enemy_frames         # FIX: also set global
-    
-        handle_playing_state.frames_loaded = True  # mark initialized
+        handle_playing_state.enemy_frames = load_enemy_frames()
+        enemy_frames = handle_playing_state.enemy_frames
+        handle_playing_state.frames_loaded = True
 
         # Initialize world if first time
         setup_colliders()
@@ -4181,6 +4657,16 @@ def handle_playing_state(screen, assets, dt):
     chopping_frames = handle_playing_state.chopping_frames
     attack_frames = handle_playing_state.attack_frames
     enemy_frames = handle_playing_state.enemy_frames
+
+    # ====== GAME OVER CHECK - STOP ALL GAMEPLAY ======
+    if is_game_over:
+        # Only draw the world, player, and game over screen
+        _draw_game_world(screen, assets, enemy_frames)
+        _draw_player(screen, player_frames, attack_frames, chopping_frames)
+        _handle_game_over(screen, assets)
+        pygame.display.flip()
+        return  # Skip all game logic and input processing
+    # ====== END GAME OVER CHECK ======
 
     # Animation variables
     attack_animation_duration = 400
@@ -4199,6 +4685,7 @@ def handle_playing_state(screen, assets, dt):
     # Music handling
     if current_level == "world":
         play_music("forest")
+        pygame.mixer.music.set_volume(0.3)
     elif current_level == "dungeon":
         play_music("dungeon")
     elif current_level == "boss_room":
@@ -4226,29 +4713,15 @@ def handle_playing_state(screen, assets, dt):
             if potion_button_rect and potion_button_rect.collidepoint(mouse_pos):
                 is_hovering = "potion"
 
-    # FIXED: Enemy spawning and updates
+    # Enemy spawning and updates
     if current_level == "dungeon":
-        # Debug enemy spawning every 3 seconds
-        if pygame.time.get_ticks() % 3000 < 50:
-            print(f"Dungeon status: {len(enemies)} enemies active, {len(enemy_spawn_points)} spawn points")
-            if len(enemies) == 0 and len(enemy_spawn_points) > 0:
-                print("WARNING: No enemies but spawn points exist!")
-
-        # Use enhanced enemy spawning
         update_enemy_spawns()
-
-        # Update enemies
         player_world_rect = get_player_world_rect()
         obstacles = dungeon_walls + stone_rects
-        for enemy in enemies[:]:  # Use slice copy for safe iteration
+        for enemy in enemies[:]:
             enemy.update(dt, current_time, player_world_rect, obstacles)
-            
-            # Remove dead enemies
             if enemy.health <= 0 and enemy in enemies:
                 enemies.remove(enemy)
-                print(f"Removed dead {enemy.type}")
-
-        # Handle combat in dungeon
         handle_combat(current_time)
 
     elif current_level == "boss_room":
@@ -4256,31 +4729,56 @@ def handle_playing_state(screen, assets, dt):
         obstacles = boss_room_walls + stone_rects
         update_boss_room_enemies(dt, current_time, player_world_rect, obstacles)
         handle_combat(current_time)
-
+    
+    # Update and draw loot drops
+    for loot in loot_drops[:]:
+        loot.update(dt)
+    
+        # Remove expired loot
+        if loot.is_expired(current_time):
+            loot_drops.remove(loot)
+            continue
+    
+        # Check for pickup
+        player_world_rect = get_player_world_rect()
+        if player_world_rect.colliderect(loot.rect.inflate(20, 20)):
+            if add_item_to_inventory(loot.item):
+                loot_drops.remove(loot)
+                floating_texts.append(FloatingText(
+                    f"+{loot.item.name}",
+                    (player_world_rect.centerx, player_world_rect.y - 20),
+                    color=(255, 255, 100),
+                    lifetime=1000
+                ))
+                print(f"Picked up {loot.item.name}")
     # Event Handling
+    # --- Event Handling ---
     for event in pygame.event.get():
         if event.type == pygame.QUIT:
             pygame.quit()
             sys.exit()
 
+        # Pause menu input
         if show_pause_menu:
             handle_pause_menu_input(event, assets, dt)
             continue
 
+        # Boss room interactions
         if current_level == "boss_room":
             handle_boss_room_interactions(event, player_pos, assets)
 
+        # ------------------------
+        # Keyboard input
+        # ------------------------
         if event.type == pygame.KEYDOWN:
             # Combat controls
-            if event.key == pygame.K_1 or event.key == pygame.K_SPACE:
+            if event.key in (pygame.K_1, pygame.K_SPACE):
                 if player.can_attack(current_time) and not is_attacking:
                     is_attacking = True
                     attack_timer = 0
-
                     player_world_rect = get_player_world_rect()
                     ATTACK_RANGE = 48
                     attack_box = player_world_rect.inflate(ATTACK_RANGE, ATTACK_RANGE)
-
                     equipped_weapon = equipment_slots.get("weapon")
                     base_damage = player.get_total_damage(equipped_weapon)
                     hit_any = False
@@ -4289,17 +4787,25 @@ def handle_playing_state(screen, assets, dt):
                         if attack_box.colliderect(enemy.rect):
                             hit_any = True
                             if enemy.take_damage(base_damage):
+                                # Enemy died - drop loot
+                                drops = enemy.drop_loot(assets)
+                                for drop_item in drops:
+                                    loot = LootDrop(enemy.rect.centerx, enemy.rect.centery, drop_item)
+                                    loot_drops.append(loot)
+
                                 player.gain_experience(enemy.experience_reward)
                                 enemies.remove(enemy)
                                 print(f"Defeated {enemy.type}! Gained {enemy.experience_reward} XP")
+
+                                if drops:
+                                    floating_texts.append(FloatingText(
+                                        f"+{len(drops)} items!",
+                                        (enemy.rect.centerx, enemy.rect.centery - 30),
+                                        color=(255, 215, 0),
+                                        lifetime=1500
+                                    ))
                             print(f"Hit {enemy.type} for {base_damage} dmg!")
 
-                    if not hit_any:
-                        print("Attack missed!")
-
-                    player.last_attack_time = current_time
-
-            # Ability keys
             elif event.key == pygame.K_2:
                 handle_block()
             elif event.key == pygame.K_3:
@@ -4307,22 +4813,8 @@ def handle_playing_state(screen, assets, dt):
             elif event.key == pygame.K_h:
                 use_potion()
 
-            # DEBUG KEY for testing enemy spawning
-            elif event.key == pygame.K_t:
-                if current_level == "dungeon":
-                    print("=== TESTING ENEMY SPAWN ===")
-                    print(f"Current enemies: {len(enemies)}")
-                    print(f"Current spawn points: {len(enemy_spawn_points)}")
-                    # Force spawn enemies for testing
-                    current_time = pygame.time.get_ticks()
-                    for spawn_point in enemy_spawn_points:
-                        spawn_point.last_spawn_time = 0
-                        result = spawn_point.spawn_enemy(current_time)
-                        if result:
-                            print(f"Force spawned {result.type}")
-            
             # Toggle UI panels
-            if event.key == pygame.K_i:
+            elif event.key == pygame.K_b:
                 show_inventory = not show_inventory
                 show_crafting = show_equipment = False
             elif event.key == pygame.K_c and not (is_chopping or is_crafting):
@@ -4333,49 +4825,34 @@ def handle_playing_state(screen, assets, dt):
                 show_inventory = show_crafting = False
 
             # World interactions
-            player_world_rect = get_player_world_rect()
+            elif event.key == pygame.K_e:
+                player_world_rect = get_player_world_rect()
 
-            if event.key == pygame.K_e:
-                # WORLD LEVEL
                 if current_level == "world":
-                    # Enter Dungeon - FIXED
                     if dungeon_portal and player_world_rect.colliderect(dungeon_portal.inflate(20, 20)):
-                        print("Entering dungeon...")
-            
-                        # Setup dungeon FIRST (this clears enemies internally)
                         spawn_point = setup_dungeon_with_enemy_spawns("dungeon1.txt")
-            
-                        # THEN change level and position player
                         current_level = "dungeon"
+                        loot_drops.clear()
                         player_pos.center = (WIDTH // 2, HEIGHT // 2)
                         map_offset_x = spawn_point[0] - WIDTH // 2
                         map_offset_y = spawn_point[1] - HEIGHT // 2
-            
-                        # Debug: verify enemies spawned
-                        print(f"Dungeon entered - {len(enemies)} enemies active, {len(enemy_spawn_points)} spawn points")
-                        for i, enemy in enumerate(enemies):
-                            print(f"  Enemy {i+1}: {enemy.type} at ({enemy.rect.x}, {enemy.rect.y})")
 
-                    # Enter House
-                    elif check_house_entry(player_world_rect) is not None:
-                        house_index = check_house_entry(player_world_rect)
+                    elif (house_index := check_house_entry(player_world_rect)) is not None:
                         current_level = "house"
                         current_house_index = house_index
                         player_pos.size = (PLAYER_SIZE_INDOOR, PLAYER_SIZE_INDOOR)
                         player_pos.center = (WIDTH // 2, HEIGHT // 2)
                         setup_indoor_colliders()
 
-                    # Talk to NPCs
                     elif npc_rect and player_world_rect.colliderect(npc_rect.inflate(20, 20)):
                         show_npc_dialog = True
                     elif miner_npc_rect and player_world_rect.colliderect(miner_npc_rect.inflate(20, 20)):
                         show_miner_dialog = True
 
-                    # Resource gathering
                     elif equipment_slots["weapon"] and equipment_slots["weapon"].name == "Axe":
                         for tree in list(tree_rects):
-                            if (player_world_rect.colliderect(tree.inflate(20, 20)) and 
-                                tree not in house_list and tree != dungeon_portal):
+                            if (player_world_rect.colliderect(tree.inflate(20, 20))
+                                    and tree not in house_list and tree != dungeon_portal):
                                 is_chopping = True
                                 chopping_target_tree = tree
                                 chopping_timer = 0
@@ -4383,6 +4860,7 @@ def handle_playing_state(screen, assets, dt):
                                 break
                         else:
                             _handle_other_resources(player_world_rect, assets)
+
                     elif equipment_slots["weapon"] and equipment_slots["weapon"].name == "Pickaxe":
                         for stone in list(stone_rects):
                             if player_world_rect.colliderect(stone.inflate(20, 20)):
@@ -4396,28 +4874,29 @@ def handle_playing_state(screen, assets, dt):
                     else:
                         _handle_flower_picking(player_world_rect, assets)
 
-                # DUNGEON LEVEL
                 elif current_level == "dungeon":
-                    # Exit to world
                     if dungeon_exit and player_world_rect.colliderect(dungeon_exit.inflate(20, 20)):
                         current_level = "world"
-                        portal_x = 25 * TILE_SIZE
-                        portal_y = 38 * TILE_SIZE
+                        loot_drops.clear()
+                        if dungeon_portal:
+                            portal_x = dungeon_portal.centerx
+                            portal_y = dungeon_portal.bottom + 50
+                        else:
+                            portal_x = 25 * TILE_SIZE
+                            portal_y = 38 * TILE_SIZE
                         map_offset_x = portal_x - WIDTH // 2
-                        map_offset_y = portal_y - HEIGHT // 2 + 100
+                        map_offset_y = portal_y - HEIGHT // 2
                         player_pos.center = (WIDTH // 2, HEIGHT // 2)
 
-                    # Enter Boss Room
                     elif boss1_portal and player_world_rect.colliderect(boss1_portal.inflate(20, 20)):
                         current_level = "boss_room"
                         enemies.clear()
+                        loot_drops.clear()
                         spawn_point = setup_boss_room()
                         map_offset_x = 0
                         map_offset_y = 0
                         player_pos.center = spawn_point
-                        print("Entered Boss Room!")
 
-                    # Mine ore in dungeon
                     elif equipment_slots["weapon"] and equipment_slots["weapon"].name == "Pickaxe":
                         for stone in list(stone_rects):
                             if player_world_rect.colliderect(stone.inflate(20, 20)):
@@ -4426,14 +4905,12 @@ def handle_playing_state(screen, assets, dt):
                                 mining_timer = 0
                                 current_direction = "idle"
                                 break
-                    else:
-                        print("You need a Pickaxe to mine ore!")
 
-                # HOUSE LEVEL
                 elif current_level == "house":
                     door_zone = pygame.Rect(WIDTH // 2 - 40, HEIGHT - 100, 80, 80)
                     if door_zone.colliderect(player_pos.inflate(50, 50)):
                         current_level = "world"
+                        loot_drops.clear()
                         player_pos.size = (PLAYER_SIZE, PLAYER_SIZE)
                         exit_rect = house_list[current_house_index]
                         player_world_x = exit_rect.centerx - 20
@@ -4443,12 +4920,11 @@ def handle_playing_state(screen, assets, dt):
                         player_pos.center = (WIDTH // 2, HEIGHT // 2)
                         current_house_index = None
 
-            # NPC Dialog controls
-            if event.key == pygame.K_SPACE and show_npc_dialog:
+            # NPC dialog controls
+            elif event.key == pygame.K_SPACE and show_npc_dialog:
                 if not npc_quest_active and not npc_quest_completed:
                     npc_quest_active = True
                     show_npc_dialog = False
-                    print("Quest accepted! Bring 3 potions to Soldier Marcus.")
                 elif npc_quest_active and get_item_count("Potion") >= potions_needed:
                     remove_item_from_inventory("Potion", potions_needed)
                     for _ in range(10):
@@ -4456,17 +4932,15 @@ def handle_playing_state(screen, assets, dt):
                     npc_quest_completed = True
                     npc_quest_active = False
                     show_npc_dialog = False
-                    print("Quest completed! You received 10 coins as a reward!")
                 elif npc_quest_completed:
                     show_npc_dialog = False
                     show_vendor_gui = True
                     vendor_tab = "buy"
 
-            if event.key == pygame.K_SPACE and show_miner_dialog:
+            elif event.key == pygame.K_SPACE and show_miner_dialog:
                 if not miner_quest_active and not miner_quest_completed:
                     miner_quest_active = True
                     show_miner_dialog = False
-                    print("Quest accepted! Gather 10 ore from the dungeon for Miner Gareth.")
                 elif miner_quest_active and get_item_count("Ore") >= ore_needed:
                     remove_item_from_inventory("Ore", ore_needed)
                     for _ in range(15):
@@ -4474,9 +4948,8 @@ def handle_playing_state(screen, assets, dt):
                     miner_quest_completed = True
                     miner_quest_active = False
                     show_miner_dialog = False
-                    print("Quest completed! You received 15 coins as a reward!")
 
-            if event.key == pygame.K_ESCAPE:
+            elif event.key == pygame.K_ESCAPE:
                 if show_npc_dialog or show_miner_dialog:
                     show_npc_dialog = False
                     show_miner_dialog = False
@@ -4486,14 +4959,34 @@ def handle_playing_state(screen, assets, dt):
                     show_pause_menu = True
                     pause_menu_selected_option = 0
 
-        # Mouse click handling
-        if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+        # ------------------------
+        # Mouse input
+        # ------------------------
+        elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+            mouse_pos = event.pos
+
+            # Handle generic clicks (crafting buttons, vendors, etc.)
             _handle_mouse_clicks(event, assets, screen)
+
+
+            # Handle HUD icon clicks
+            for name, rect in hud_buttons.items():
+                if rect.collidepoint(mouse_pos):
+                    if name == "inventory":
+                        show_inventory = not show_inventory
+                        show_crafting = show_equipment = False
+                    elif name == "crafting":
+                        show_crafting = not show_crafting
+                        show_inventory = show_equipment = False
+                    elif name == "equipment":
+                        show_equipment = not show_equipment
+                        show_inventory = show_crafting = False
+
 
     # Game State Updates
     _update_npc_animations(dt)
     _update_crafting(current_time, assets, dt)
-    _update_animations(dt, player_frames, attack_frames, chopping_frames, attack_animation_duration)
+    _update_animations(dt, player_frames, attack_frames, chopping_frames, attack_animation_duration, assets)
 
     # Player Movement
     if not _is_ui_blocking_movement():
@@ -4505,481 +4998,62 @@ def handle_playing_state(screen, assets, dt):
     _draw_game_world(screen, assets, enemy_frames)
     _draw_player(screen, player_frames, attack_frames, chopping_frames)
     _draw_ui_elements(screen, assets, player_frames, attack_frames, chopping_frames, is_hovering)
-    _handle_game_over(screen, assets)
 
     pygame.display.flip()
 
-# Helper functions to clean up the main function
-def _handle_other_resources(player_world_rect, assets):
-    """Handle mining and flower picking when player has axe."""
-    global equipment_slots, is_mining, mining_target_stone, mining_timer, current_direction
-    
-    if equipment_slots["weapon"] and equipment_slots["weapon"].name == "Pickaxe":
-        for stone in list(stone_rects):
-            if player_world_rect.colliderect(stone.inflate(20, 20)):
-                is_mining = True
-                mining_target_stone = stone
-                mining_timer = 0
-                current_direction = "idle"
-                break
-        else:
-            _handle_flower_picking(player_world_rect, assets)
-    else:
-        _handle_flower_picking(player_world_rect, assets)
-
-def _handle_flower_picking(player_world_rect, assets):
-    """Handle flower picking."""
-    for fx, fy, idx in list(flower_tiles):
-        flower_rect = pygame.Rect(fx, fy, 30, 30)
-        if player_world_rect.colliderect(flower_rect.inflate(10, 10)):
-            add_item_to_inventory(assets["flower_item"])
-            flower_tiles.remove((fx, fy, idx))
-            print("Picked a flower!")
-            break
-
-def _handle_mouse_clicks(event, assets, screen):
-    """Handle all mouse click events."""
-    if show_vendor_gui:
-        _handle_vendor_clicks(event, assets)
-    elif show_crafting and not is_crafting:
-        _handle_crafting_clicks(event, assets)
-    elif show_equipment:
-        equipment_slot_rects = draw_equipment_panel(screen, assets)
-        handle_equipment_click(event.pos, equipment_slot_rects)
-    elif show_inventory:
-        handle_inventory_click(event.pos)
-
-def _handle_vendor_clicks(event, assets):
-    """Handle vendor GUI clicks."""
-    global vendor_tab
-    
-    if "buy_tab" in buy_button_rects and buy_button_rects["buy_tab"].collidepoint(event.pos):
-        vendor_tab = "buy"
-    elif "sell_tab" in buy_button_rects and buy_button_rects["sell_tab"].collidepoint(event.pos):
-        vendor_tab = "sell"
-    elif vendor_tab == "buy":
-        _handle_buy_transactions(event, assets)
-    elif vendor_tab == "sell":
-        _handle_sell_transactions(event, assets)
-
-def _handle_buy_transactions(event, assets):
-    """Handle buying items from vendor."""
-    shop_items = get_shop_items(assets)
-    coin_count = get_item_count("Coin")
-    
-    for item_name, button_rect in buy_button_rects.items():
-        if item_name in ["buy_tab", "sell_tab"]:
-            continue
-        if button_rect.collidepoint(event.pos):
-            item_data = shop_items[item_name]
-            if coin_count >= item_data["buy_price"]:
-                remove_item_from_inventory("Coin", item_data["buy_price"])
-                add_item_to_inventory(item_data["item"])
-                print(f"Bought {item_name} for {item_data['buy_price']} coins!")
-            else:
-                print("Not enough coins!")
-            break
-
-def _handle_sell_transactions(event, assets):
-    """Handle selling items to vendor."""
-    shop_items = get_shop_items(assets)
-    
-    for item_name, button_rect in sell_button_rects.items():
-        if button_rect.collidepoint(event.pos):
-            if get_item_count(item_name) > 0:
-                remove_item_from_inventory(item_name, 1)
-                item_data = shop_items[item_name]
-                for _ in range(item_data["sell_price"]):
-                    add_item_to_inventory(assets["coin_item"])
-                print(f"Sold {item_name} for {item_data['sell_price']} coins!")
-            break
-
-def _handle_crafting_clicks(event, assets):
-    """Handle crafting GUI clicks."""
-    global crafting_tab, is_crafting, crafting_timer, item_to_craft
-    
-    if smithing_tab_rect and smithing_tab_rect.collidepoint(event.pos):
-        crafting_tab = "smithing"
-    elif alchemy_tab_rect and alchemy_tab_rect.collidepoint(event.pos):
-        crafting_tab = "alchemy"
-    elif crafting_tab == "smithing":
-        _handle_smithing_crafting(event, assets)
-    elif crafting_tab == "alchemy":
-        _handle_alchemy_crafting(event, assets)
-
-def _handle_smithing_crafting(event, assets):
-    """Handle smithing crafting clicks."""
-    global is_crafting, crafting_timer, item_to_craft
-    
-    crafting_recipes = [
-        (axe_button_rect, "Log", 5, assets["axe_item"], "Axe"),
-        (pickaxe_button_rect, "Log", 10, assets["pickaxe_item"], "Pickaxe"),
-        (helmet_button_rect, "Stone", 8, assets["helmet_item"], "Helmet"),
-        (chest_button_rect, "Stone", 15, assets["chest_item"], "Chest Armor"),
-        (boots_button_rect, "Stone", 6, assets["boots_item"], "Boots")
-    ]
-    
-    for button_rect, material, cost, item_obj, item_name in crafting_recipes:
-        if button_rect and button_rect.collidepoint(event.pos):
-            if get_item_count(material) >= cost:
-                is_crafting = True
-                crafting_timer = 0
-                item_to_craft = item_obj
-                remove_item_from_inventory(material, cost)
-                print(f"Crafting {item_name}...")
-            else:
-                print(f"Not enough {material.lower()}!")
-            break
-
-def _handle_alchemy_crafting(event, assets):
-    """Handle alchemy crafting clicks."""
-    global is_crafting, crafting_timer, item_to_craft
-    
-    if potion_button_rect and potion_button_rect.collidepoint(event.pos):
-        if get_item_count("Flower") >= 3:
-            is_crafting = True
-            crafting_timer = 0
-            item_to_craft = assets["potion_item"]
-            remove_item_from_inventory("Flower", 3)
-            print("Brewing a Potion...")
-        else:
-            print("Not enough flowers!")
-
-def _update_npc_animations(dt):
-    """Update NPC idle animations."""
-    global npc_idle_timer, npc_idle_direction, npc_idle_offset_y
-    global miner_idle_timer, miner_idle_direction, miner_idle_offset_y
-    
-    # NPC idle animation
-    npc_idle_timer += dt
-    if npc_idle_timer >= 2000:
-        npc_idle_direction *= -1
-        npc_idle_timer = 0
-    
-    idle_progress = npc_idle_timer / 2000.0
-    npc_idle_offset_y = int(3 * math.sin(idle_progress * 3.14159) * npc_idle_direction)
-    
-    # Miner NPC idle animation
-    miner_idle_timer += dt
-    if miner_idle_timer >= 2200:
-        miner_idle_direction *= -1
-        miner_idle_timer = 0
-    
-    miner_idle_progress = miner_idle_timer / 2200.0
-    miner_idle_offset_y = int(4 * math.sin(miner_idle_progress * 3.14159) * miner_idle_direction)
-
-def _update_crafting(current_time, assets, dt):  
-    """Update crafting progress."""
-    global is_crafting, crafting_timer, item_to_craft
-    
-    if is_crafting:
-        crafting_timer += dt  # Now dt is defined as a parameter
-        
-        if crafting_timer >= CRAFTING_TIME_MS:
-            if add_item_to_inventory(item_to_craft):
-                print(f"Crafting complete! {item_to_craft.name} added to inventory.")
-            else:
-                print("Crafting failed: Inventory is full.")
-            is_crafting = False
-            item_to_craft = None
-            crafting_timer = 0  # Reset timer
-
-def _update_animations(dt, player_frames, attack_frames, chopping_frames, attack_animation_duration):
-    """Update player animations."""
-    global is_attacking, attack_timer, player_frame_timer, player_frame_index, current_direction
-    global is_chopping, chopping_timer, chopping_target_tree, is_swinging
-    global is_mining, mining_timer, mining_target_stone
-    global swing_delay, idle_chop_delay, player_frame_delay
-    
-    # Attack animation
-    if is_attacking:
-        attack_timer += dt
-        player_frame_timer += dt
-        if player_frame_timer >= swing_delay:
-            attack_direction = last_direction if last_direction in attack_frames else "down"
-            max_frames = len(attack_frames[attack_direction])
-            player_frame_index = (player_frame_index + 1) % max_frames
-            player_frame_timer = 0
-
-        if attack_timer >= attack_animation_duration:
-            is_attacking = False
-            attack_timer = 0
-            player_frame_index = 0
-            current_direction = "idle"
-
-    # Chopping animation
-    elif is_chopping:
-        chopping_timer += dt
-        player_frame_timer += dt
-        if player_frame_timer > idle_chop_delay:
-            is_swinging = True
-            if player_frame_timer >= swing_delay:
-                chop_direction = last_direction if last_direction in chopping_frames else "down"
-                max_frames = len(chopping_frames[chop_direction])
-                player_frame_index = (player_frame_index + 1) % max_frames
-                player_frame_timer = 0
-
-        if chopping_timer >= CHOPPING_DURATION:
-            _complete_chopping(current_time, assets)
-
-    # Mining animation  
-    elif is_mining:
-        mining_timer += dt
-        player_frame_timer += dt
-        if player_frame_timer > idle_chop_delay:
-            is_swinging = True
-            if player_frame_timer >= swing_delay:
-                chop_direction = last_direction if last_direction in chopping_frames else "down"
-                max_frames = len(chopping_frames[chop_direction])
-                player_frame_index = (player_frame_index + 1) % max_frames
-                player_frame_timer = 0
-
-        if mining_timer >= MINING_DURATION:
-            _complete_mining(current_time, assets)
-
-    # Normal animation state update
-    else:
-        player_frame_timer += dt
-        if current_direction == "idle":
-            player_frame_index = 0
-        elif player_frame_timer > player_frame_delay:
-            frame_set = player_frames.get(current_direction, player_frames["idle"])
-            max_frames = len(frame_set)
-            player_frame_index = (player_frame_index + 1) % max_frames
-            player_frame_timer = 0
-
-def _complete_chopping(current_time, assets):
-    """Complete tree chopping action."""
-    global is_chopping, is_swinging, chopping_timer, chopping_target_tree, current_direction
-    
-    if chopping_target_tree in tree_rects:
-        tree_rects.remove(chopping_target_tree)
-        chopped_trees[(chopping_target_tree.x, chopping_target_tree.y, 
-                      chopping_target_tree.width, chopping_target_tree.height)] = current_time
-        add_item_to_inventory(assets["log_item"])
-        print("Chopped a tree! Gained a log.")
-    
-    is_chopping = False
-    is_swinging = False
-    chopping_timer = 0
-    chopping_target_tree = None
-    current_direction = "idle"
-
-def _complete_mining(current_time, assets):
-    """Complete stone/ore mining action."""
-    global is_mining, is_swinging, mining_timer, mining_target_stone, current_direction
-    
-    if mining_target_stone in stone_rects:
-        stone_rects.remove(mining_target_stone)
-        chopped_stones[(mining_target_stone.x, mining_target_stone.y,
-                       mining_target_stone.width, mining_target_stone.height)] = current_time
-        
-        if current_level == "dungeon":
-            add_item_to_inventory(assets["ore_item"])
-            print("Mined ore!")
-        else:
-            add_item_to_inventory(assets["stone_item"])
-            print("Mined a stone!")
-    
-    is_mining = False
-    is_swinging = False
-    mining_timer = 0
-    mining_target_stone = None
-    current_direction = "idle"
-
-def _update_respawns(current_time):
-    """Update resource respawn timers."""
-    # Tree respawning
-    for tree_rect_tuple, time_chopped in list(chopped_trees.items()):
-        tree_rect = pygame.Rect(tree_rect_tuple)
-        if current_time - time_chopped > RESPAWN_TIME:
-            tree_rects.append(tree_rect)
-            del chopped_trees[tree_rect_tuple]
-
-    # Stone respawning
-    for stone_rect_tuple, time_mined in list(chopped_stones.items()):
-        stone_rect = pygame.Rect(stone_rect_tuple)
-        if current_time - time_mined > RESPAWN_TIME:
-            stone_rects.append(stone_rect)
-            del chopped_stones[stone_rect_tuple]
-
-def _is_ui_blocking_movement():
-    """Check if any UI is blocking player movement."""
-    return (show_inventory or show_crafting or show_equipment or 
-            is_chopping or is_mining or is_attacking or 
-            show_npc_dialog or show_miner_dialog)
-
-def _handle_player_movement(dx, dy):
-    """Handle player movement based on current level."""
-    global map_offset_x, map_offset_y, player_pos, last_direction, current_direction
-    
-    if current_level == "world" or current_level == "dungeon":
-        new_player_world_rect = get_player_world_rect().move(dx, dy)
-        if not handle_collision(new_player_world_rect):
-            map_offset_x += dx
-            map_offset_y += dy
-            if dx != 0 or dy != 0:
-                last_direction = current_direction
-    else:  # current_level == "house" or "boss_room"
-        new_player_pos = player_pos.move(dx, dy)
-        if not handle_collision(new_player_pos):
-            player_pos = new_player_pos
-            if dx != 0 or dy != 0:
-                last_direction = current_direction
-def draw_dungeon(screen, assets, enemy_frames):
-    """Draws the dungeon level with enemies and boss door."""
-    dungeon_width = 30
-    dungeon_height = 30
-    
-    # Draw floor tiles
-    for x in range(dungeon_width):
-        for y in range(dungeon_height):
-            screen.blit(assets["dungeon_floor"], (x * TILE_SIZE - map_offset_x, y * TILE_SIZE - map_offset_y))
-    
-    # Draw dungeon walls
-    for wall in dungeon_walls:
-        screen.blit(assets["dungeon_wall"], (wall.x - map_offset_x, wall.y - map_offset_y))
-    
-    # Draw ore deposits
-    for ore in stone_rects:
-        screen.blit(assets["ore_img"], (ore.x - map_offset_x, ore.y - map_offset_y))
-    
-    # Draw boss door if it exists
-    if boss1_portal and current_level == "dungeon":
-        boss_door_image = assets["boss_door_frames"]["closed"]
-        screen.blit(boss_door_image, (boss1_portal.x - map_offset_x, boss1_portal.y - map_offset_y))
-    
-    # Draw enemies
-    for enemy in enemies:
-        enemy_screen_rect = world_to_screen_rect(enemy.rect)
-        if 0 <= enemy_screen_rect.x <= WIDTH and 0 <= enemy_screen_rect.y <= HEIGHT:
-            if enemy.type in enemy_frames and len(enemy_frames[enemy.type]) > 0:
-                frame = enemy_frames[enemy.type][enemy.frame_index % len(enemy_frames[enemy.type])]
-                screen.blit(frame, enemy_screen_rect)
-        
-            # Draw enemy health bar
-            if enemy.health < enemy.max_health:
-                bar_y = enemy_screen_rect.y - 10
-                draw_health_bar(screen, enemy_screen_rect.x, bar_y, enemy.health, enemy.max_health, enemy.rect.width, 5)
-    
-    # Draw exit portal
-    if dungeon_exit:
-        screen.blit(assets["portal"], (dungeon_exit.x - map_offset_x, dungeon_exit.y - map_offset_y))
-    
-    # Update floating texts
-    for text in floating_texts[:]:
-        text.update()
-        if not text.is_alive():
-            floating_texts.remove(text)
-        else:
-            text.draw(screen, assets["small_font"], map_offset_x, map_offset_y)
-
-def _draw_game_world(screen, assets, enemy_frames):
-    """Draw the appropriate game world based on current level."""
-    screen.fill((0, 0, 0))
-    
-    if current_level == "world":
-        draw_world(screen, assets)
-    elif current_level == "dungeon":
-        draw_dungeon(screen, assets, enemy_frames)
-    elif current_level == "boss_room":
-        draw_boss_room(screen, assets)
-    else:  # house
-        screen.blit(assets["interiors"][current_house_index], (0, 0))
-
-def _draw_player(screen, player_frames, attack_frames, chopping_frames):
-    """Draw the player with appropriate animations."""
-    player_size_current = player_pos.width
-    
-    if is_attacking:
-        attack_direction = last_direction if last_direction in attack_frames else "down"
-        frame_index = min(player_frame_index, len(attack_frames[attack_direction]) - 1)
-        scaled_frame = pygame.transform.scale(attack_frames[attack_direction][frame_index], 
-                                            (player_size_current, player_size_current))
-        screen.blit(scaled_frame, player_pos)
-    elif is_chopping or is_mining:
-        chop_direction = last_direction if last_direction in chopping_frames else "down"
-        frame_index = min(player_frame_index, len(chopping_frames[chop_direction]) - 1)
-        scaled_frame = pygame.transform.scale(chopping_frames[chop_direction][frame_index], 
-                                            (player_size_current, player_size_current))
-        screen.blit(scaled_frame, player_pos)
-    else:
-        frame_set = player_frames.get(current_direction, player_frames["idle"])
-        frame_index = min(player_frame_index, len(frame_set) - 1)
-        scaled_frame = pygame.transform.scale(frame_set[frame_index], 
-                                            (player_size_current, player_size_current))
-        screen.blit(scaled_frame, player_pos)
-
-def _draw_ui_elements(screen, assets, player_frames, attack_frames, chopping_frames, is_hovering):
-    """Draw all UI elements."""
-    # Main UI
-    draw_player_stats(screen, assets, player_frames, attack_frames, chopping_frames)
-    draw_experience_bar(screen, assets)
-    draw_hud(screen, assets)
-    draw_ability_bar(screen, assets)
-    draw_tooltip_for_nearby_objects(screen, assets["small_font"])
-
-    # Dialogs
-    draw_npc_dialog(screen, assets)
-    draw_miner_dialog(screen, assets)
-
-    # UI Panels (drawn in order of priority)
-    if show_pause_menu:
-        draw_pause_menu(screen, assets)
-    if show_inventory:
-        draw_inventory(screen, assets)
-    if show_crafting:
-        draw_crafting_panel(screen, assets, is_hovering)
-    if show_equipment:
-        draw_equipment_panel(screen, assets)
-    if show_vendor_gui:
-        draw_vendor_gui(screen, assets)
-    
-    # Notifications
-    draw_level_up_notification(screen, assets)
-    
-    # Debug info
-    draw_player_coordinates(screen, assets["small_font"])
 
 def _handle_game_over(screen, assets):
-    """Handle game over screen and restart logic."""
+    """Handle game over screen and restart logic - FIXED."""
     global current_level, map_offset_x, map_offset_y, player_pos, enemies, inventory, equipment_slots
+    global is_game_over, show_inventory, show_crafting, show_equipment
+    global npc_quest_active, npc_quest_completed, miner_quest_active, miner_quest_completed
     
-    if player.health <= 0:
-        game_over_text = assets["large_font"].render("GAME OVER", True, (255, 0, 0))
-        restart_text = assets["font"].render("Press R to restart or ESC to quit", True, (255, 255, 255))
-        screen.blit(game_over_text, game_over_text.get_rect(center=(WIDTH//2, HEIGHT//2 - 50)))
-        screen.blit(restart_text, restart_text.get_rect(center=(WIDTH//2, HEIGHT//2 + 50)))
-        
-        keys = pygame.key.get_pressed()
-        if keys[pygame.K_r]:
-            # Restart game
-            player.health = player.max_health
-            player.level = 1
-            player.experience = 0
-            player.experience_to_next = 100
-            current_level = "world"
-            map_offset_x = 0
-            map_offset_y = 0
-            player_pos.center = (WIDTH // 2, HEIGHT // 2)
-            enemies.clear()
-            inventory = [[None for _ in range(4)] for _ in range(4)]
-            equipment_slots = {
-                "weapon": None,
-                "helmet": None,
-                "armor": None,
-                "boots": None,
-                "ring1": None,
-                "ring2": None,
-                "amulet": None,
-                "shield": None
-            }
-            give_starting_items(assets)
-            setup_colliders()
-        elif keys[pygame.K_ESCAPE]:
+    # Draw semi-transparent overlay
+    overlay = pygame.Surface((WIDTH, HEIGHT))
+    overlay.set_alpha(180)
+    overlay.fill((0, 0, 0))
+    screen.blit(overlay, (0, 0))
+    
+    # Draw game over text
+    game_over_text = assets["large_font"].render("GAME OVER", True, (255, 0, 0))
+    restart_text = assets["font"].render("Press R to Respawn or ESC to Quit", True, (255, 255, 255))
+    screen.blit(game_over_text, game_over_text.get_rect(center=(WIDTH//2, HEIGHT//2 - 50)))
+    screen.blit(restart_text, restart_text.get_rect(center=(WIDTH//2, HEIGHT//2 + 50)))
+    
+    # Handle input using events (not get_pressed to avoid repeating)
+    for event in pygame.event.get():
+        if event.type == pygame.QUIT:
             pygame.quit()
             sys.exit()
-
-
-
-main()
+        elif event.type == pygame.KEYDOWN:
+            if event.key == pygame.K_r:
+                # Reset everything
+                player.health = player.max_health
+                player.level = 1
+                player.experience = 0
+                player.experience_to_next = 100
+                player.damage = PLAYER_BASE_DAMAGE
+                player.defense = PLAYER_BASE_DEFENSE
+                current_level = "world"
+                map_offset_x = 0
+                map_offset_y = 0
+                player_pos.center = (WIDTH // 2, HEIGHT // 2)
+                enemies.clear()
+                inventory = [[None for _ in range(4)] for _ in range(4)]
+                equipment_slots = {
+                    "weapon": None, "helmet": None, "armor": None, "boots": None,
+                    "ring1": None, "ring2": None, "amulet": None, "shield": None
+                }
+                show_inventory = show_crafting = show_equipment = False
+                npc_quest_active = npc_quest_completed = False
+                miner_quest_active = miner_quest_completed = False
+                
+                give_starting_items(assets)
+                setup_colliders()
+                is_game_over = False
+                print("Game restarted!")
+            elif event.key == pygame.K_ESCAPE:
+                pygame.quit()
+                sys.exit()
+if __name__ == "__main__":
+    main()
