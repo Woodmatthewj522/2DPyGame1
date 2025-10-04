@@ -1,10 +1,10 @@
 {
   "player": {
     "level": 1,
-    "health": 100,
+    "health": 10,
     "max_health": 100,
     "damage": 15,
-    "experience": 0,
+    "experience": 70,
     "experience_to_next": 100,
     "position": {
       "x": 380,
@@ -12,23 +12,23 @@
     }
   },
   "world": {
-    "current_level": "world",
-    "map_offset_x": 360,
-    "map_offset_y": 250
+    "current_level": "dungeon",
+    "map_offset_x": -135,
+    "map_offset_y": -25
   },
   "inventory": [
     [
       {
         "name": "Stone",
-        "count": 14,
+        "count": 4,
         "category": null,
         "damage": 0
       },
       {
-        "name": "Axe",
+        "name": "Log",
         "count": 1,
-        "category": "Weapon",
-        "damage": 20
+        "category": null,
+        "damage": 0
       },
       {
         "name": "Pickaxe",
@@ -39,9 +39,19 @@
       null
     ],
     [
+      {
+        "name": "Ore",
+        "count": 2,
+        "category": null,
+        "damage": 0
+      },
       null,
-      null,
-      null,
+      {
+        "name": "Coin",
+        "count": 20,
+        "category": null,
+        "damage": 0
+      },
       null
     ],
     [
@@ -58,13 +68,17 @@
     ]
   ],
   "equipment": {
-    "weapon": null
+    "weapon": {
+      "name": "Axe",
+      "category": "Weapon",
+      "damage": 20
+    }
   },
   "quests": {
     "npc_quest_active": false,
-    "npc_quest_completed": false,
-    "miner_quest_active": false,
+    "npc_quest_completed": true,
+    "miner_quest_active": true,
     "miner_quest_completed": false
   },
-  "timestamp": 19735
+  "timestamp": 86187
 }
