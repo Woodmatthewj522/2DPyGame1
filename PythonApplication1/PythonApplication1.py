@@ -6,7 +6,7 @@ import math
 import pygame
 import json
 import pygame.mixer
-# --- CONSTANTS ---
+# --- CONSTANTS ---`
 WIDTH, HEIGHT = 800, 600
 TILE_SIZE = 50
 PLAYER_SIZE = 40
@@ -73,6 +73,7 @@ mine_sound_played = False
 
 crystal_rects = []
 water_tiles = []
+path_tiles = []
 zone2_merchant_rect = None
 zone2_return_portal = None
 # Music constants
@@ -1357,7 +1358,10 @@ def load_text_map(filename):
         'L': 'leaf',
         '@': 'player_spawn',
         '.': 'grass',
-        'B': 'boss1_portal'
+        'B': 'boss1_portal',
+        'L': 'lava',
+        'W': 'water',     
+        'R': 'path' 
     }
 
     try:
@@ -1407,6 +1411,16 @@ def load_text_map(filename):
                         map_data['tiles'].append({
                             'type': 'leaf',
                             'pos': (x + random.randint(8, 14), y + random.randint(8, 14))
+                        })
+                    elif char == 'W':
+                        map_data['tiles'].append({
+                            'type': 'water',
+                            'rect': pygame.Rect(x, y, TILE_SIZE, TILE_SIZE)
+                        })
+                    elif char == 'R':
+                        map_data['tiles'].append({
+                            'type': 'path',
+                            'rect': pygame.Rect(x, y, TILE_SIZE, TILE_SIZE)
                         })
     except FileNotFoundError:
         print(f"Could not load map: {filename}")
@@ -1648,7 +1662,10 @@ def apply_map_data(map_data):
             flower_tiles.append(tile['pos'])
         elif tile['type'] == 'leaf':
             leaf_tiles.append(tile['pos'])
-    
+        elif tile['type'] == 'water':  # ADD THIS
+            water_tiles.append(tile['rect'])
+        elif tile['type'] == 'path':   # ADD THIS
+            path_tiles.append(tile['rect'])
     # Apply entities
     for entity in map_data['entities']:
         x, y = entity['pos']
@@ -2182,9 +2199,12 @@ def load_assets():
     # --- Tiles ---
     grass_image = try_load_image(os.path.join("Tiles", "grass_middle.png"), (TILE_SIZE, TILE_SIZE), (34, 139, 34))
     tree_image = try_load_image(os.path.join("Tiles", "tree.png"), (TILE_SIZE + 5, TILE_SIZE + 5), (101, 67, 33))
+    water_image = try_load_image("water_middle.png", (TILE_SIZE, TILE_SIZE), (50, 100, 200))
+    path_image = try_load_image("path_middle.png", (TILE_SIZE, TILE_SIZE), (139, 90, 43))
     house_image = try_load_image(os.path.join("Tiles", "house.png"), (TILE_SIZE * 2, TILE_SIZE * 2), (139, 69, 19))
     house1_image = try_load_image(os.path.join("Tiles", "house1.png"), (TILE_SIZE * 2, TILE_SIZE * 2), (160, 82, 45))
     house2_image = try_load_image(os.path.join("Tiles", "house2.png"), (TILE_SIZE * 2, TILE_SIZE * 2), (205, 133, 63))
+    backofhouse_image = try_load_image(os.path.join("Tiles", "backofhouse1.png"), (TILE_SIZE * 2, TILE_SIZE * 2), (139, 69, 19))
     # --- Outdoor Stuff (sheet) ---
     try:
         sheet = pygame.image.load("OutdoorStuff.PNG").convert_alpha()
@@ -2282,10 +2302,12 @@ def load_assets():
         "house": house_image,
         "house1": house1_image,
         "house2": house2_image,
+        "backofhouse": backofhouse_image,
         "interiors": interiors,
         "flowers": flower_images,
         "leaf": leaf_image,
-
+        "water": water_image,
+        "path": path_image,
         # Portal / Dungeon
         "boss1_portal": boss1_portal,
         "portal": portal_image,
@@ -3849,7 +3871,13 @@ def draw_world(screen, assets):
         for col in range(start_col, start_col + cols_to_draw):
             x, y = col * TILE_SIZE, row * TILE_SIZE
             screen.blit(assets["grass"], (x - map_offset_x, y - map_offset_y))
-    
+    # Draw path tiles
+    for path in path_tiles:
+        screen.blit(assets["path"], (path.x - map_offset_x, path.y - map_offset_y))
+
+    # Draw water tiles  
+    for water in water_tiles:
+        screen.blit(assets["water"], (water.x - map_offset_x, water.y - map_offset_y))
     # Draw stones
     for stone in stone_rects:
         screen.blit(assets["stone_img"], (stone.x - map_offset_x, stone.y - map_offset_y))
@@ -3874,10 +3902,16 @@ def draw_world(screen, assets):
     if zone2_portal:
         screen.blit(assets["portal"], (zone2_portal.x - map_offset_x, zone2_portal.y - map_offset_y))
         print("DEBUG: zone2_portal =", zone2_portal)
-    # Draw the houses
-    if house_list:
-        screen.blit(assets["house"], (house_list[0].x - map_offset_x, house_list[0].y - map_offset_y))
-        screen.blit(assets["house1"], (house_list[1].x - map_offset_x, house_list[1].y - map_offset_y))
+    # Draw all houses
+    for i, house in enumerate(house_list):
+        # Cycle through the 3 house types
+        house_type = i % 3
+        if house_type == 0:
+            screen.blit(assets["house"], (house.x - map_offset_x, house.y - map_offset_y))
+        elif house_type == 1:
+            screen.blit(assets["house1"], (house.x - map_offset_x, house.y - map_offset_y))
+        else:
+            screen.blit(assets["house2"], (house.x - map_offset_x, house.y - map_offset_y))
 
     # Draw NPC with idle animation
     if npc_rect:
