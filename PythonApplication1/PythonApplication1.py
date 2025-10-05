@@ -71,6 +71,10 @@ is_game_over = False  # ADD THIS LINE
 chop_sound_played = False
 mine_sound_played = False
 
+crystal_rects = []
+water_tiles = []
+zone2_merchant_rect = None
+zone2_return_portal = None
 # Music constants
 MUSIC_FILES = {
     "main_menu": "main.mp3",       # points to main.mp3
@@ -1036,6 +1040,7 @@ show_level_up = False
 # Dungeon objects
 boss1_portal = None
 dungeon_portal = None
+zone2_portal = None
 dungeon_walls = []
 enemies = []
 dungeon_exit = None
@@ -1332,17 +1337,17 @@ def find_nearest_enemy(player_world_rect):
     return nearest_enemy
 
 def load_text_map(filename):
-    """Load a map from a text file."""
+    """Load a map from a text file (supports P2 for zone2 portal)."""
     map_data = {
         'tiles': [],
         'entities': [],
         'spawn_point': (WIDTH // 2, HEIGHT // 2),
         'borders': []
     }
-    
+
     tile_mapping = {
         'G': 'grass',
-        'T': 'tree', 
+        'T': 'tree',
         'S': 'stone',
         'H': 'house',
         'P': 'portal',
@@ -1351,47 +1356,61 @@ def load_text_map(filename):
         'F': 'flower',
         'L': 'leaf',
         '@': 'player_spawn',
-        '.': 'grass',  # empty space = grass
-        'B': 'boss1_portal',
+        '.': 'grass',
+        'B': 'boss1_portal'
     }
-    
+
     try:
         with open(filename, 'r') as f:
             lines = f.readlines()
             for row, line in enumerate(lines):
-                for col, char in enumerate(line.strip()):
-                    x, y = col * TILE_SIZE, row * TILE_SIZE
-                    if char in tile_mapping:
-                        if char == '@':
-                            map_data['spawn_point'] = (x, y)
-                        elif char in ['N', 'M', 'P', 'H']:
-                            map_data['entities'].append({
-                                'type': tile_mapping[char],
-                                'pos': (x, y)
-                            })
-                        elif char == 'T':
-                            map_data['borders'].append(pygame.Rect(x + 5, y + 5, TILE_SIZE - 10, TILE_SIZE - 10))
-                        elif char == 'S':
-                            offset = (TILE_SIZE - (TILE_SIZE // 2)) // 2
-                            map_data['tiles'].append({
-                                'type': 'stone',
-                                'rect': pygame.Rect(x + offset, y + offset, TILE_SIZE // 2, TILE_SIZE // 2)
-                            })
-                        elif char == 'F':
-                            map_data['tiles'].append({
-                                'type': 'flower',
-                                'pos': (x + 10, y + 10, random.randint(0, 1))
-                            })
+                line = line.rstrip("\n")
 
-                        elif char == 'L':
-                            map_data['tiles'].append({
-                                'type': 'leaf',
-                                'pos': (x + random.randint(8, 14), y + random.randint(8, 14))
-                            })
+                col = 0
+                while col < len(line):
+                    # Handle 2-character tokens like "P2"
+                    if col + 1 < len(line) and line[col:col+2] == "P2":
+                        char = "P2"
+                        col += 2
+                    else:
+                        char = line[col]
+                        col += 1
+
+                    x, y = (col - 1) * TILE_SIZE, row * TILE_SIZE
+
+                    if char == '@':
+                        map_data['spawn_point'] = (x, y)
+                    elif char in ['N', 'M', 'P', 'H']:
+                        map_data['entities'].append({
+                            'type': tile_mapping[char],
+                            'pos': (x, y)
+                        })
+                    elif char == 'P2':
+                        map_data['entities'].append({
+                            'type': 'zone2_portal',
+                            'pos': (x, y)
+                        })
+                    elif char == 'T':
+                        map_data['borders'].append(pygame.Rect(x + 5, y + 5, TILE_SIZE - 10, TILE_SIZE - 10))
+                    elif char == 'S':
+                        offset = (TILE_SIZE - (TILE_SIZE // 2)) // 2
+                        map_data['tiles'].append({
+                            'type': 'stone',
+                            'rect': pygame.Rect(x + offset, y + offset, TILE_SIZE // 2, TILE_SIZE // 2)
+                        })
+                    elif char == 'F':
+                        map_data['tiles'].append({
+                            'type': 'flower',
+                            'pos': (x + 10, y + 10, random.randint(0, 1))
+                        })
+                    elif char == 'L':
+                        map_data['tiles'].append({
+                            'type': 'leaf',
+                            'pos': (x + random.randint(8, 14), y + random.randint(8, 14))
+                        })
     except FileNotFoundError:
         print(f"Could not load map: {filename}")
 
-    
     return map_data
 
 # Add this debug function and call it in your boss room drawing
@@ -1609,7 +1628,8 @@ def apply_map_data(map_data):
     global tree_rects, house_list, stone_rects, flower_tiles, leaf_tiles
     global npc_rect, miner_npc_rect, dungeon_portal, player_pos, map_offset_x, map_offset_y
     global boss1_portal
-    
+    global zone2_portal
+
     # Clear existing data
     tree_rects.clear()
     house_list.clear() 
@@ -1639,6 +1659,9 @@ def apply_map_data(map_data):
         elif entity['type'] == 'portal':
             dungeon_portal = pygame.Rect(x, y, 50, 50)
             tree_rects.append(dungeon_portal)
+        elif entity['type'] == 'zone2_portal':
+            zone2_portal = pygame.Rect(x, y, 50, 50)
+            tree_rects.append(zone2_portal)
         elif entity['type'] == 'boss1_portal':
             boss1_portal = pygame.Rect(x, y, 50, 50)
             tree_rects.append(boss1_portal)
@@ -2220,6 +2243,7 @@ def load_assets():
     # --- Portal & Dungeon ---
     boss1_portal = try_load_image("boss1_portal.png", (50, 50), (128, 0, 128))
     portal_image = try_load_image("cave.png", (50, 50), (64, 0, 128))
+    zone2_portal = try_load_image("zone2_portal.png", (50, 50), (0, 128, 128))
     dungeon_wall_image = try_load_image("wall.png", (TILE_SIZE, TILE_SIZE), (64, 64, 64))
     dungeon_floor_image = try_load_image("caveFloor.png", (TILE_SIZE, TILE_SIZE), (32, 32, 32))
 
@@ -2267,7 +2291,7 @@ def load_assets():
         "portal": portal_image,
         "dungeon_wall": dungeon_wall_image,
         "dungeon_floor": dungeon_floor_image,
-
+        "zone2_portal": zone2_portal,
         # Fonts
         "font": pygame.font.SysFont(None, 36),
         "small_font": pygame.font.SysFont(None, 24),
@@ -2420,6 +2444,7 @@ def setup_colliders():
     """Generates the world colliders for the current level."""
     global tree_rects, house_list, indoor_colliders, flower_tiles, leaf_tiles, stone_rects
     global npc_rect, dungeon_portal, miner_npc_rect
+    global zone2_portal
 
     if current_level == "world":
         # Try to load current map, fallback to procedural generation
@@ -2535,7 +2560,7 @@ def handle_boss_room_state(screen, assets):
 def generate_default_world():
     """Generate a basic world if map loading fails."""
     global tree_rects, house_list, stone_rects, flower_tiles, leaf_tiles
-    global npc_rect, miner_npc_rect, dungeon_portal
+    global npc_rect, miner_npc_rect, dungeon_portal, zone2_portal
     
     # Clear existing
     tree_rects.clear()
@@ -2577,6 +2602,9 @@ def generate_default_world():
     # Add dungeon portal
     dungeon_portal = pygame.Rect(20 * TILE_SIZE, 30 * TILE_SIZE, 50, 50)
     
+    # Next zone portal
+    zone2_portal = pygame.Rect(5 * TILE_SIZE, 5 * TILE_SIZE, 50, 50)
+
     # Add flowers
     for _ in range(10):
         fx = random.randint(2, 37) * TILE_SIZE + 10
@@ -3422,6 +3450,7 @@ def _handle_player_movement(dx, dy):
             map_offset_y += dy
             if dx != 0 or dy != 0:
                 last_direction = current_direction
+
     else:  # current_level == "house" or "boss_room"
         new_player_pos = player_pos.move(dx, dy)
         if not handle_collision(new_player_pos):
@@ -3476,6 +3505,235 @@ def draw_dungeon(screen, assets, enemy_frames):
             floating_texts.remove(text)
         else:
             text.draw(screen, assets["small_font"], map_offset_x, map_offset_y)
+def draw_zone2(screen, assets):
+    """Draw Zone 2 with its unique features."""
+    # Draw grass base
+    for row in range(HEIGHT // TILE_SIZE + 2):
+        for col in range(WIDTH // TILE_SIZE + 2):
+            x = col * TILE_SIZE - (map_offset_x % TILE_SIZE)
+            y = row * TILE_SIZE - (map_offset_y % TILE_SIZE)
+            # Use a slightly different grass color for zone2
+            grass_tinted = assets["grass"].copy()
+            grass_tinted.fill((180, 255, 180), special_flags=pygame.BLEND_MULT)
+            screen.blit(grass_tinted, (x, y))
+    
+    # Draw water tiles
+    for wx, wy in water_tiles:
+        water_rect = pygame.Rect(wx - map_offset_x, wy - map_offset_y, TILE_SIZE, TILE_SIZE)
+        pygame.draw.rect(screen, (50, 100, 200), water_rect)  # Blue water
+        # Add some wave effect
+        pygame.draw.rect(screen, (100, 150, 255), water_rect, 2)
+    
+    # Draw trees (mystical purple tint)
+    for tree in tree_rects:
+        tree_image = assets["tree"].copy()
+        tree_image.fill((200, 150, 255), special_flags=pygame.BLEND_MULT)
+        screen.blit(tree_image, (tree.x - map_offset_x - 2, tree.y - map_offset_y - 2))
+    
+    # Draw crystals
+    for crystal in crystal_rects:
+        # Draw glowing effect
+        glow_rect = crystal.inflate(10, 10)
+        glow_surf = pygame.Surface((glow_rect.width, glow_rect.height), pygame.SRCALPHA)
+        pygame.draw.ellipse(glow_surf, (100, 200, 255, 50), glow_surf.get_rect())
+        screen.blit(glow_surf, (glow_rect.x - map_offset_x, glow_rect.y - map_offset_y))
+        
+        # Draw crystal
+        if "crystal_item" in assets:
+            screen.blit(assets["crystal_item"].image, 
+                       (crystal.x - map_offset_x, crystal.y - map_offset_y))
+    
+    # Draw stones
+    for stone in stone_rects:
+        screen.blit(assets["stone_img"], (stone.x - map_offset_x, stone.y - map_offset_y))
+    
+    # Draw flowers with magical glow
+    for fx, fy, idx in flower_tiles:
+        flower_image = assets["flowers"][idx].copy()
+        flower_image.fill((255, 200, 255), special_flags=pygame.BLEND_ADD)
+        screen.blit(flower_image, (fx - map_offset_x, fy - map_offset_y))
+    
+    # Draw leaves
+    for lx, ly in leaf_tiles:
+        screen.blit(assets["leaf"], (lx - map_offset_x, ly - map_offset_y))
+    
+    # Draw return portal
+    if zone2_return_portal:
+        # Portal with purple tint
+        portal_image = assets["portal"].copy()
+        portal_image.fill((200, 100, 255), special_flags=pygame.BLEND_MULT)
+        screen.blit(portal_image, 
+                   (zone2_return_portal.x - map_offset_x, zone2_return_portal.y - map_offset_y))
+    
+    # Draw merchant NPC if exists
+    if zone2_merchant_rect:
+        # You can use miner image or create a new merchant image
+        merchant_image = assets.get("miner_image", assets["npc_image"])
+        merchant_image = pygame.transform.scale(merchant_image, (PLAYER_SIZE, PLAYER_SIZE))
+        screen.blit(merchant_image, 
+                   (zone2_merchant_rect.x - map_offset_x, zone2_merchant_rect.y - map_offset_y))
+
+# Add this function after your existing load_text_map function
+def load_zone2_map(filename="zone2.txt"):
+    """Load Zone 2 map from text file."""
+    map_data = {
+        'tiles': [],
+        'entities': [],
+        'spawn_point': (5 * TILE_SIZE, 5 * TILE_SIZE),
+        'borders': [],
+        'crystals': [],
+        'water': [],
+        'return_portal': None
+    }
+    
+    tile_mapping = {
+        'T': 'tree',
+        'S': 'stone', 
+        'F': 'flower',
+        'L': 'leaf',
+        'P': 'return_portal',
+        'C': 'crystal',
+        'W': 'water',
+        'M': 'merchant',
+        '@': 'player_spawn',
+        '.': 'grass'
+    }
+    
+    try:
+        with open(filename, 'r') as f:
+            lines = f.readlines()
+            for row, line in enumerate(lines):
+                # Skip comment lines
+                if line.startswith('#'):
+                    continue
+                    
+                for col, char in enumerate(line.strip()):
+                    x, y = col * TILE_SIZE, row * TILE_SIZE
+                    
+                    if char == '@':
+                        map_data['spawn_point'] = (x, y)
+                    elif char == 'P':
+                        map_data['return_portal'] = pygame.Rect(x, y, 50, 50)
+                    elif char == 'T':
+                        map_data['borders'].append(pygame.Rect(x + 5, y + 5, TILE_SIZE - 10, TILE_SIZE - 10))
+                    elif char == 'S':
+                        offset = (TILE_SIZE - (TILE_SIZE // 2)) // 2
+                        map_data['tiles'].append({
+                            'type': 'stone',
+                            'rect': pygame.Rect(x + offset, y + offset, TILE_SIZE // 2, TILE_SIZE // 2)
+                        })
+                    elif char == 'C':
+                        map_data['crystals'].append(pygame.Rect(x + 10, y + 10, 30, 30))
+                    elif char == 'W':
+                        map_data['water'].append((x, y))
+                    elif char == 'F':
+                        map_data['tiles'].append({
+                            'type': 'flower',
+                            'pos': (x + 10, y + 10, random.randint(0, 1))
+                        })
+                    elif char == 'L':
+                        map_data['tiles'].append({
+                            'type': 'leaf',
+                            'pos': (x + random.randint(8, 14), y + random.randint(8, 14))
+                        })
+                    elif char == 'M':
+                        map_data['entities'].append({
+                            'type': 'merchant',
+                            'pos': (x, y)
+                        })
+    except FileNotFoundError:
+        print(f"Could not load zone2 map: {filename}")
+        
+    return map_data
+def handle_zone2_portal_interaction(player_world_rect):
+    """Handle entering zone2 from world."""
+    global current_level, map_offset_x, map_offset_y, player_pos
+    
+    if zone2_portal and player_world_rect.colliderect(zone2_portal.inflate(20, 20)):
+        current_level = "zone2"
+        spawn_point = setup_zone2()
+        map_offset_x = spawn_point[0] - WIDTH // 2
+        map_offset_y = spawn_point[1] - HEIGHT // 2
+        player_pos.center = (WIDTH // 2, HEIGHT // 2)
+        print("Entered Zone 2 - The Mystical Realm!")
+        return True
+    return False
+def handle_zone2_return_portal(player_world_rect):
+    """Handle returning from zone2 to world."""
+    global current_level, map_offset_x, map_offset_y
+    
+    if zone2_return_portal and player_world_rect.colliderect(zone2_return_portal.inflate(20, 20)):
+        current_level = "world"
+        # Reload world map
+        setup_colliders()
+        
+        # Spawn near zone2 portal in world
+        if zone2_portal:
+            spawn_x = zone2_portal.centerx
+            spawn_y = zone2_portal.bottom + 50
+        else:
+            spawn_x = 5 * TILE_SIZE
+            spawn_y = 5 * TILE_SIZE
+            
+        map_offset_x = spawn_x - WIDTH // 2
+        map_offset_y = spawn_y - HEIGHT // 2
+        player_pos.center = (WIDTH // 2, HEIGHT // 2)
+        print("Returned to the main world.")
+        return True
+    return False
+
+def handle_crystal_mining(player_world_rect, assets):
+    """Handle mining crystals in zone2."""
+    global is_mining, mining_timer, mining_target_stone
+    
+    if equipment_slots["weapon"] and equipment_slots["weapon"].name == "Pickaxe":
+        for crystal in list(crystal_rects):
+            if player_world_rect.colliderect(crystal.inflate(20, 20)):
+                is_mining = True
+                mining_target_stone = crystal  # Reuse mining system
+                mining_timer = 0
+                current_direction = "idle"
+                return True
+    return False
+# Add this function to setup zone2
+def setup_zone2():
+    """Setup Zone 2 with its unique resources and NPCs."""
+    global crystal_rects, water_tiles, zone2_merchant_rect, zone2_return_portal
+    global tree_rects, stone_rects, flower_tiles, leaf_tiles
+    
+    # Load zone2 map
+    map_data = load_zone2_map("zone2.txt")
+    
+    # Clear existing world objects
+    tree_rects.clear()
+    stone_rects.clear()
+    flower_tiles.clear()
+    leaf_tiles.clear()
+    crystal_rects.clear()
+    water_tiles.clear()
+    
+    # Apply map data
+    tree_rects.extend(map_data['borders'])
+    crystal_rects.extend(map_data['crystals'])
+    water_tiles.extend(map_data['water'])
+    zone2_return_portal = map_data['return_portal']
+    
+    # Apply tiles
+    for tile in map_data['tiles']:
+        if tile['type'] == 'stone':
+            stone_rects.append(tile['rect'])
+        elif tile['type'] == 'flower':
+            flower_tiles.append(tile['pos'])
+        elif tile['type'] == 'leaf':
+            leaf_tiles.append(tile['pos'])
+    
+    # Apply entities
+    for entity in map_data['entities']:
+        if entity['type'] == 'merchant':
+            zone2_merchant_rect = pygame.Rect(entity['pos'][0], entity['pos'][1], 
+                                             PLAYER_SIZE, PLAYER_SIZE)
+    
+    return map_data['spawn_point']
 
 def _draw_game_world(screen, assets, enemy_frames):
     """Draw the appropriate game world based on current level."""
@@ -3483,6 +3741,8 @@ def _draw_game_world(screen, assets, enemy_frames):
     
     if current_level == "world":
         draw_world(screen, assets)
+    elif current_level == "zone2":  # Add this
+        draw_zone2(screen, assets)
     elif current_level == "dungeon":
         draw_dungeon(screen, assets, enemy_frames)
     elif current_level == "boss_room":
@@ -3610,6 +3870,10 @@ def draw_world(screen, assets):
     if dungeon_portal:
         screen.blit(assets["portal"], (dungeon_portal.x - map_offset_x, dungeon_portal.y - map_offset_y))
 
+    # Draw zone2 portal
+    if zone2_portal:
+        screen.blit(assets["portal"], (zone2_portal.x - map_offset_x, zone2_portal.y - map_offset_y))
+        print("DEBUG: zone2_portal =", zone2_portal)
     # Draw the houses
     if house_list:
         screen.blit(assets["house"], (house_list[0].x - map_offset_x, house_list[0].y - map_offset_y))
@@ -4102,7 +4366,11 @@ def draw_tooltip_for_nearby_objects(screen, font):
             tooltip_text = "Enter Dungeon [e]"
             portal_screen = world_to_screen_rect(dungeon_portal)
             tooltip_pos = (portal_screen.x, portal_screen.y)
-        
+        if zone2_portal and player_world_rect.colliderect(zone2_portal.inflate(20, 20)):
+            tooltip_text = "Enter [e]"
+            portal_screen = world_to_screen_rect(zone2_portal)
+            tooltip_pos = (portal_screen.x, portal_screen.y)
+
         # Houses: show tooltip if near the player
         elif tooltip_text is None:
             house_index = check_house_entry(player_world_rect)
@@ -4171,7 +4439,12 @@ def draw_tooltip_for_nearby_objects(screen, font):
         if player_pos.colliderect(door_zone):
             tooltip_text = "Exit [e]"
             tooltip_pos = door_zone.topleft
-    
+    elif current_level == "zone2":
+        # Inside zone2: Portal back to world check (proximity-based, not mouse hover)
+        if zone2_portal and player_world_rect.colliderect(zone2_portal.inflate(20, 20)):
+            portal_screen = world_to_screen_rect(zone2_portal)
+            tooltip_text = "Exit [e]"
+            tooltip_pos = (portal_screen.x, portal_screen.y)
     elif current_level == "dungeon":
         # Inside dungeon: Boss door check (proximity-based, not mouse hover)
         if boss1_portal and player_world_rect.colliderect(boss1_portal.inflate(30, 30)):
@@ -4610,9 +4883,6 @@ def draw_quests_panel(screen, assets):
         screen.blit(text, (panel_x + 20, panel_y + y_offset))
         y_offset += 25
 
-    close_text = assets["small_font"].render("[Click quest icon again to close]", True, (180, 180, 180))
-    screen.blit(close_text, (panel_x + 20, panel_y + panel_height - 30))
-
 def draw_hud(screen, assets):
     global hud_buttons
     hud_buttons = {}
@@ -4766,6 +5036,16 @@ def handle_collision(new_world_rect):
         # Allow free movement except for walls loaded from map
         if any(new_world_rect.colliderect(r) for r in boss_room_walls):
             return True
+        return False
+    elif current_level == "zone2":
+        # Check collision with trees and water
+        if any(new_world_rect.colliderect(r) for r in tree_rects + crystal_rects):
+            return True
+        # Check water collision (blocks movement)
+        for wx, wy in water_tiles:
+            water_rect = pygame.Rect(wx, wy, TILE_SIZE, TILE_SIZE)
+            if new_world_rect.colliderect(water_rect):
+                return True
         return False
     else:  # house
         return any(new_world_rect.colliderect(r) for r in indoor_colliders)
@@ -5169,7 +5449,8 @@ def handle_playing_state(screen, assets, dt):
                         player_pos.center = (WIDTH // 2, HEIGHT // 2)
                         map_offset_x = spawn_point[0] - WIDTH // 2
                         map_offset_y = spawn_point[1] - HEIGHT // 2
-
+                    elif zone2_portal and player_world_rect.colliderect(zone2_portal.inflate(20, 20)):
+                        handle_zone2_portal_interaction(player_world_rect)
                     elif (house_index := check_house_entry(player_world_rect)) is not None:
                         current_level = "house"
                         current_house_index = house_index
@@ -5206,7 +5487,14 @@ def handle_playing_state(screen, assets, dt):
                             _handle_flower_picking(player_world_rect, assets)
                     else:
                         _handle_flower_picking(player_world_rect, assets)
-
+                # Add a new section for ZONE2 level interactions:
+                elif current_level == "zone2":
+                    if handle_zone2_return_portal(player_world_rect):
+                        pass  # Portal handled
+                    elif handle_crystal_mining(player_world_rect, assets):
+                        pass  # Crystal mining started
+                    else:
+                        _handle_flower_picking(player_world_rect, assets)
                 # DUNGEON level interactions
                 elif current_level == "dungeon":
                     if dungeon_exit and player_world_rect.colliderect(dungeon_exit.inflate(20, 20)):
