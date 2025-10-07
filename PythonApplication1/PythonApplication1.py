@@ -2004,7 +2004,7 @@ def _handle_sell_transactions(event, assets):
                 print(f"Sold {item_name} for {item_data['sell_price']} coins!")
             break
 
-def _handle_crafting_clicks(event, assets):
+def _handle_crafting_clicks(event, assets, content_y, screen):
     """Handle crafting GUI clicks."""
     global crafting_tab, is_crafting, crafting_timer, item_to_craft
     
@@ -3432,7 +3432,7 @@ def _handle_crafting_clicks(event, assets):
         _handle_alchemy_crafting(event, assets)
     elif crafting_tab == "cooking":
         _handle_cooking_crafting(event, assets)
-def _handle_cooking_crafting(dt, assets):
+def _handle_cooking_crafting(dt, assets, play_sound):
     """
     Handle the cooking process — starts when the player interacts with a campfire, stove, or cooking tile.
     Works similarly to crafting or smithing but focused on food-related items.
