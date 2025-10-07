@@ -74,7 +74,7 @@ is_game_over = False  # ADD THIS LINE
 chop_sound_played = False
 mine_sound_played = False
 cooking_tab_rect = None
-
+shop_scroll_offset = 0
 crystal_rects = []
 water_tiles = []
 path_tiles = []
@@ -4072,7 +4072,15 @@ def _draw_ui_elements(screen, assets, player_frames, attack_frames, chopping_fra
     if show_quests:
         draw_quests_panel(screen, assets)
     draw_level_up_notification(screen, assets)
-    draw_player_coordinates(screen, assets["small_font"])
+def draw_player_coordinates(screen, font, player_x, player_y):
+    coords_text = f"X: {player_x}  Y: {player_y}"
+    text_surface = font.render(coords_text, True, (255, 255, 255))
+
+    # Position in the top-right corner with a small margin
+    margin = 10
+    text_rect = text_surface.get_rect(topright=(WIDTH - margin, margin))
+
+    screen.blit(text_surface, text_rect)
 
 def draw_experience_bar(screen, assets):
     """Draws the experience/level progress bar at the bottom of the screen."""
