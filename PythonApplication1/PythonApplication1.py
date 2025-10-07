@@ -59,7 +59,10 @@ EQUIPMENT_PANEL_WIDTH = 4 * EQUIPMENT_SLOT_SIZE + 4 * EQUIPMENT_GAP + 20
 EQUIPMENT_PANEL_HEIGHT = 2 * EQUIPMENT_SLOT_SIZE + 4 * EQUIPMENT_GAP + 100  # Extra space for stats
 EQUIPMENT_X = (WIDTH - EQUIPMENT_PANEL_WIDTH) // 2
 EQUIPMENT_Y = (HEIGHT - EQUIPMENT_PANEL_HEIGHT) // 2
-
+# Inventory drag-and-drop
+dragging_item = None
+dragging_from_slot = None
+drag_offset = (0, 0)
 # Dungeon constants
 DUNGEON_SIZE = 30
 DUNGEON_SPAWN_X = 5 * TILE_SIZE
@@ -157,7 +160,11 @@ class Player:
         self.is_invulnerable = False
         self.invulnerability_timer = 0
         self.invulnerability_duration = 1000  # ms
-
+        # Health regeneration
+        self.health_regen_rate = 0.5  # HP per second
+        self.health_regen_delay = 5000  # 5 seconds after last damage
+        self.out_of_combat = True
+        self.last_damage_time = 0
         # Position & hitbox
         self.rect = pygame.Rect(WIDTH // 2, HEIGHT // 2, PLAYER_SIZE, PLAYER_SIZE)
         self.hitbox = self.rect.inflate(-PLAYER_SIZE // 4, -PLAYER_SIZE // 4)
@@ -173,6 +180,9 @@ class Player:
         if self.is_invulnerable:
             return False
 
+        # Track damage time for regen
+        self.last_damage_time = current_time
+        self.out_of_combat = False
         # FIXED: Calculate damage reduction from defense
         total_defense = self.get_total_defense()
     
@@ -205,6 +215,15 @@ class Player:
             self.die()
             return True
         return False
+    def regenerate_health(self, dt, current_time):
+        # Check if enough time has passed since last damage
+        if current_time - self.last_damage_time >= self.health_regen_delay:
+            self.out_of_combat = True
+        
+            # Regenerate health
+            if self.health < self.max_health:
+                regen_amount = (self.health_regen_rate * dt) / 1000  # Convert ms to seconds
+                self.health = min(self.max_health, self.health + regen_amount)
 
     def heal(self, heal_amount):
         """Heal with feedback, no overheal beyond max_health."""
@@ -335,6 +354,7 @@ class Player:
         if self.is_invulnerable and current_time - self.invulnerability_timer >= self.invulnerability_duration:
             self.is_invulnerable = False
         self.update_status_effects(dt)
+        self.regenerate_health(dt, current_time)
         self.hitbox.center = self.rect.center
         
 class Enemy:
@@ -1896,7 +1916,7 @@ def _handle_mouse_clicks(event, assets, screen):
         equipment_slot_rects = draw_equipment_panel(screen, assets)
         handle_equipment_click(event.pos, equipment_slot_rects)
     elif show_inventory:
-        handle_inventory_click(event.pos)
+        _handle_mouse_clicks(event, assets, screen)
 def _handle_vendor_clicks(event, assets):
     """Handle vendor GUI clicks."""
     global vendor_tab
@@ -2990,13 +3010,13 @@ def unequip_item_from_slot(slot_name):
             print("Inventory is full, cannot unequip.")
     return False
 # Fixed inventory click handling in main game loop
-def handle_inventory_click(mouse_pos):
-    """Handle clicking on inventory slots to equip items."""
-    global inventory  # Make sure we can access the global inventory
+def handle_inventory_mouse_down(mouse_pos):
+    """Handle starting to drag an item from inventory."""
+    global dragging_item, dragging_from_slot, drag_offset, inventory
     
     if not show_inventory:
         return False
-        
+    
     for row in range(4):
         for col in range(4):
             slot_x = INVENTORY_X + INVENTORY_GAP + col * (INVENTORY_SLOT_SIZE + INVENTORY_GAP)
@@ -3004,19 +3024,144 @@ def handle_inventory_click(mouse_pos):
             slot_rect = pygame.Rect(slot_x, slot_y, INVENTORY_SLOT_SIZE, INVENTORY_SLOT_SIZE)
             
             if slot_rect.collidepoint(mouse_pos):
-                item_to_equip = inventory[row][col]
-                if item_to_equip:
-                    # Check if item can be equipped
-                    if (hasattr(item_to_equip, 'category') and item_to_equip.category in ["Weapon", "Armor"]) or \
-                       item_to_equip.name in ["Axe", "Pickaxe", "Sword", "Helmet", "Chest", "Boots"]:
-                        if equip_item(item_to_equip):
-                            inventory[row][col] = None  # Remove from inventory
-                            print(f"Equipped {item_to_equip.name}")
-                        return True
-                    else:
-                        print(f"{item_to_equip.name} cannot be equipped")
-                return True
+                item = inventory[row][col]
+                if item:
+                    # Start dragging
+                    dragging_item = item
+                    dragging_from_slot = (row, col)
+                    drag_offset = (mouse_pos[0] - slot_rect.centerx, mouse_pos[1] - slot_rect.centery)
+                    return True
     return False
+
+def handle_inventory_mouse_up(mouse_pos):
+    """Handle dropping an item in inventory or equipping it."""
+    global dragging_item, dragging_from_slot, drag_offset, inventory
+    
+    if not show_inventory or not dragging_item:
+        return False
+    
+    # Try to find which slot we're dropping into
+    drop_slot = None
+    for row in range(4):
+        for col in range(4):
+            slot_x = INVENTORY_X + INVENTORY_GAP + col * (INVENTORY_SLOT_SIZE + INVENTORY_GAP)
+            slot_y = INVENTORY_Y + 40 + INVENTORY_GAP + row * (INVENTORY_SLOT_SIZE + INVENTORY_GAP)
+            slot_rect = pygame.Rect(slot_x, slot_y, INVENTORY_SLOT_SIZE, INVENTORY_SLOT_SIZE)
+            
+            if slot_rect.collidepoint(mouse_pos):
+                drop_slot = (row, col)
+                break
+        if drop_slot:
+            break
+    
+    if drop_slot:
+        from_row, from_col = dragging_from_slot
+        to_row, to_col = drop_slot
+        
+        # Swap items
+        inventory[from_row][from_col], inventory[to_row][to_col] = \
+            inventory[to_row][to_col], inventory[from_row][from_col]
+        
+        print(f"Moved item from ({from_row},{from_col}) to ({to_row},{to_col})")
+    else:
+        # Check if dropping outside inventory = equip attempt
+        if (hasattr(dragging_item, 'category') and dragging_item.category in ["Weapon", "Armor", "Helmet", "Boots"]) or \
+           dragging_item.name in ["Axe", "Pickaxe", "Sword", "Helmet", "Chest Armor", "Boots"]:
+            if equip_item(dragging_item):
+                from_row, from_col = dragging_from_slot
+                inventory[from_row][from_col] = None
+                print(f"Equipped {dragging_item.name}")
+    
+    # Clear drag state
+    dragging_item = None
+    dragging_from_slot = None
+    drag_offset = (0, 0)
+    return True
+
+def draw_inventory(screen, assets):
+    """Draws the inventory GUI with drag-and-drop support."""
+    global show_inventory, dragging_item, drag_offset
+
+    if not show_inventory:
+        return
+
+    # --- Panel background ---
+    panel_rect = pygame.Rect(INVENTORY_X, INVENTORY_Y, INVENTORY_WIDTH, INVENTORY_HEIGHT + 50)
+    pygame.draw.rect(screen, (101, 67, 33), panel_rect)
+    pygame.draw.rect(screen, (255, 255, 255), panel_rect, 2)
+
+    # --- Header ---
+    header_rect = pygame.Rect(INVENTORY_X, INVENTORY_Y, INVENTORY_WIDTH, 40)
+    pygame.draw.rect(screen, (50, 33, 16), header_rect)
+    header_text = assets["small_font"].render("Backpack", True, (255, 255, 255))
+    screen.blit(header_text, header_text.get_rect(centerx=header_rect.centerx, top=INVENTORY_Y + 10))
+
+    # --- Close button ---
+    close_btn_size = 30
+    close_btn_x = INVENTORY_X + INVENTORY_WIDTH - close_btn_size - 8
+    close_btn_y = INVENTORY_Y + 5
+    close_rect = pygame.Rect(close_btn_x, close_btn_y, close_btn_size, close_btn_size)
+
+    pygame.draw.rect(screen, (200, 0, 0), close_rect)
+    pygame.draw.rect(screen, (255, 255, 255), close_rect, 2)
+    x_text = assets["small_font"].render("X", True, (255, 255, 255))
+    screen.blit(x_text, x_text.get_rect(center=close_rect.center))
+
+    mouse_pos = pygame.mouse.get_pos()
+    mouse_click = pygame.mouse.get_pressed()[0]
+    if close_rect.collidepoint(mouse_pos) and mouse_click:
+        pygame.time.wait(150)
+        show_inventory = False
+        print("❌ Inventory closed.")
+
+    # --- Inventory slots ---
+    for row in range(4):
+        for col in range(4):
+            slot_x = INVENTORY_X + INVENTORY_GAP + col * (INVENTORY_SLOT_SIZE + INVENTORY_GAP)
+            slot_y = INVENTORY_Y + 40 + INVENTORY_GAP + row * (INVENTORY_SLOT_SIZE + INVENTORY_GAP)
+            slot_rect = pygame.Rect(slot_x, slot_y, INVENTORY_SLOT_SIZE, INVENTORY_SLOT_SIZE)
+
+            # Highlight slot if hovering
+            is_hovering = slot_rect.collidepoint(mouse_pos)
+            border_color = (255, 255, 100) if is_hovering else (150, 150, 150)
+            
+            pygame.draw.rect(screen, (70, 70, 70), slot_rect)
+            pygame.draw.rect(screen, border_color, slot_rect, 2)
+
+            item = inventory[row][col]
+            
+            # Don't draw the item being dragged in its original slot
+            if dragging_item and dragging_from_slot == (row, col):
+                continue
+            
+            if item:
+                screen.blit(
+                    pygame.transform.scale(item.image, (INVENTORY_SLOT_SIZE, INVENTORY_SLOT_SIZE)),
+                    slot_rect
+                )
+                if item.count > 1:
+                    count_text = assets["small_font"].render(str(item.count), True, (255, 255, 255))
+                    screen.blit(count_text, count_text.get_rect(bottomright=slot_rect.bottomright))
+    
+    # Draw dragging item following mouse
+    if dragging_item:
+        drag_x = mouse_pos[0] - drag_offset[0]
+        drag_y = mouse_pos[1] - drag_offset[1]
+        drag_rect = pygame.Rect(drag_x - INVENTORY_SLOT_SIZE//2, drag_y - INVENTORY_SLOT_SIZE//2, 
+                                INVENTORY_SLOT_SIZE, INVENTORY_SLOT_SIZE)
+        
+        # Semi-transparent background
+        drag_surface = pygame.Surface((INVENTORY_SLOT_SIZE, INVENTORY_SLOT_SIZE), pygame.SRCALPHA)
+        drag_surface.fill((255, 255, 255, 128))
+        screen.blit(drag_surface, drag_rect)
+        
+        # Item image
+        item_image = pygame.transform.scale(dragging_item.image, (INVENTORY_SLOT_SIZE, INVENTORY_SLOT_SIZE))
+        screen.blit(item_image, drag_rect)
+        
+        if dragging_item.count > 1:
+            count_text = assets["small_font"].render(str(dragging_item.count), True, (255, 255, 255))
+            screen.blit(count_text, count_text.get_rect(bottomright=drag_rect.bottomright))
 
 
 def handle_equipment_click(mouse_pos, slot_rects):
@@ -3090,11 +3235,19 @@ def draw_player_stats(screen, assets, player_frames, attack_frames, chopping_fra
     # Health bar (moved right to make room for portrait)
     health_bar_x = portrait_rect.right + 10
     draw_health_bar(screen, health_bar_x, y_offset, player.health, player.max_health, 120, 15)
-    health_text = f"Health: {player.health}/{player.max_health}"
-    text_surf = assets["small_font"].render(health_text, True, (255, 255, 255))
+    
+    # Add regen indicator
+    regen_text = ""
+    if player.out_of_combat and player.health < player.max_health:
+        regen_text = " +HP"
+        health_color = (100, 255, 100)  # Green when regenerating
+    else:
+        health_color = (255, 255, 255)
+    
+    health_text = f"Health: {int(player.health)}/{player.max_health}{regen_text}"
+    text_surf = assets["small_font"].render(health_text, True, health_color)
     screen.blit(text_surf, (health_bar_x + 130, y_offset))
     y_offset += 25
-    
     # FIXED: Show damage and defense
     equipped_weapon = equipment_slots.get("weapon")
     total_damage = player.get_total_damage(equipped_weapon)
@@ -5621,8 +5774,19 @@ def handle_playing_state(screen, assets, dt):
         elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
             mouse_pos = event.pos
 
+            # Handle inventory drag start FIRST (before other handlers)
+            if show_inventory:
+                if handle_inventory_mouse_down(mouse_pos):
+                    continue  # Skip other click handlers while starting drag
+    
             # general click handlers (crafting, vendor, etc.)
-            _handle_mouse_clicks(event, assets, screen)
+            if show_vendor_gui:
+                _handle_vendor_clicks(event, assets)
+            elif show_crafting and not is_crafting:
+                _handle_crafting_clicks(event, assets)
+            elif show_equipment:
+                equipment_slot_rects = draw_equipment_panel(screen, assets)
+                handle_equipment_click(event.pos, equipment_slot_rects)
 
             # HUD icon toggles (inventory, crafting, equipment, quests)
             for name, rect in hud_buttons.items():
@@ -5637,11 +5801,13 @@ def handle_playing_state(screen, assets, dt):
                         show_equipment = not show_equipment
                         show_inventory = show_crafting = False
                     elif name == "quests":
-                        # Toggle quests panel
-                        # ensure other panels close
                         show_quests = not globals().get("show_quests", False)
                         show_inventory = show_crafting = show_equipment = False
 
+        # Add this new event handler for mouse button UP
+        elif event.type == pygame.MOUSEBUTTONUP and event.button == 1:
+            if show_inventory and dragging_item:
+                handle_inventory_mouse_up(event.pos)
     # -------------------------
     # Per-frame state updates (animations, movement)
     # -------------------------
