@@ -73,6 +73,7 @@ dash_cooldown = 0
 is_game_over = False  # ADD THIS LINE
 chop_sound_played = False
 mine_sound_played = False
+cooking_tab_rect = None
 
 crystal_rects = []
 water_tiles = []
@@ -1047,6 +1048,8 @@ chopped_stones = {}
 picked_flowers = {}
 indoor_colliders = []
 flower_tiles = []
+carrot_tiles = []
+picked_carrots = []
 leaf_tiles = []
 npc_rect = None
 miner_npc_rect = None
@@ -1071,6 +1074,7 @@ floating_texts = []
 boss_door_rect = None
 # Crafting button rects
 axe_button_rect = None
+sword_button_rect = None
 pickaxe_button_rect = None
 potion_button_rect = None
 smithing_tab_rect = None
@@ -1247,6 +1251,27 @@ def draw_pause_menu(screen, assets):
     instruction_text = assets["small_font"].render("Use arrow keys or mouse to navigate, ENTER or click to select", True, (200, 200, 200))
     instruction_rect = instruction_text.get_rect(center=(WIDTH // 2, panel_y + panel_height - 30))
     screen.blit(instruction_text, instruction_rect)
+def update_camera():
+    global map_offset_x, map_offset_y
+    margin_x = WIDTH // 4
+    margin_y = HEIGHT // 4
+
+    if current_level == "zone2":
+        margin_x = WIDTH // 8   # smaller margins = faster catch-up
+        margin_y = HEIGHT // 8
+    else:
+        margin_x = WIDTH // 4
+        margin_y = HEIGHT // 4
+    # Only move camera if player goes outside the margin box
+    if player.rect.centerx - map_offset_x < margin_x:
+        map_offset_x = player.rect.centerx - margin_x
+    elif player.rect.centerx - map_offset_x > WIDTH - margin_x:
+        map_offset_x = player.rect.centerx - (WIDTH - margin_x)
+
+    if player.rect.centery - map_offset_y < margin_y:
+        map_offset_y = player.rect.centery - margin_y
+    elif player.rect.centery - map_offset_y > HEIGHT - margin_y:
+        map_offset_y = player.rect.centery - (HEIGHT - margin_y)
 
 def handle_pause_menu_input(event, assets, dt):
     """Handle input for the pause menu."""
@@ -1375,6 +1400,7 @@ def load_text_map(filename):
         'N': 'npc',
         'M': 'miner',
         'F': 'flower',
+        'C': 'carrot', 
         'L': 'leaf',
         '@': 'player_spawn',
         '.': 'grass',
@@ -1431,6 +1457,11 @@ def load_text_map(filename):
                         map_data['tiles'].append({
                             'type': 'leaf',
                             'pos': (x + random.randint(8, 14), y + random.randint(8, 14))
+                        })
+                    elif char == 'C':
+                        map_data['tiles'].append({
+                            'type': 'carrot',
+                            'pos': (x + 10, y + 10, random.randint(0, 1))
                         })
                     elif char == 'W':
                         map_data['tiles'].append({
@@ -1659,7 +1690,7 @@ def load_dungeon_map_with_enemies(dungeon1):
 
 def apply_map_data(map_data):
     """Apply loaded map data to game globals."""
-    global tree_rects, house_list, stone_rects, flower_tiles, leaf_tiles
+    global tree_rects, house_list, stone_rects, flower_tiles, leaf_tiles, carrot_tiles
     global npc_rect, miner_npc_rect, dungeon_portal, player_pos, map_offset_x, map_offset_y
     global boss1_portal
     global zone2_portal
@@ -1670,7 +1701,7 @@ def apply_map_data(map_data):
     stone_rects.clear()
     flower_tiles.clear()
     leaf_tiles.clear()
-    
+    carrot_tiles.clear()
     # Apply borders (trees)
     tree_rects.extend(map_data['borders'])
     
@@ -1686,6 +1717,8 @@ def apply_map_data(map_data):
             water_tiles.append(tile['rect'])
         elif tile['type'] == 'path':   # ADD THIS
             path_tiles.append(tile['rect'])
+        elif tile['type'] == 'carrot':
+            carrot_tiles.append(tile['pos'])
     # Apply entities
     for entity in map_data['entities']:
         x, y = entity['pos']
@@ -1905,18 +1938,27 @@ def _handle_flower_picking(player_world_rect, assets):
             flower_tiles.remove((fx, fy, idx))
             print("Picked a flower!")
             break
-
-def _handle_mouse_clicks(event, assets, screen):
-    """Handle all mouse click events."""
-    if show_vendor_gui:
-        _handle_vendor_clicks(event, assets)
-    elif show_crafting and not is_crafting:
-        _handle_crafting_clicks(event, assets)
-    elif show_equipment:
-        equipment_slot_rects = draw_equipment_panel(screen, assets)
-        handle_equipment_click(event.pos, equipment_slot_rects)
-    elif show_inventory:
-        _handle_mouse_clicks(event, assets, screen)
+def _handle_carrot_picking(player_world_rect, assets):
+    """Handle carrot picking."""
+    for cx, cy, idx in list(carrot_tiles):
+        carrot_rect = pygame.Rect(cx, cy, 30, 30)
+        if player_world_rect.colliderect(carrot_rect.inflate(10, 10)):
+            add_item_to_inventory(assets["carrot_item"])
+            carrot_tiles.remove((cx, cy, idx))
+            print("Picked a carrot!")
+            break
+def _handle_crafting_clicks(event, assets):
+    """Handle crafting GUI clicks."""
+    global crafting_tab, is_crafting, crafting_timer, item_to_craft
+    
+    if smithing_tab_rect and smithing_tab_rect.collidepoint(event.pos):
+        crafting_tab = "smithing"
+    elif alchemy_tab_rect and alchemy_tab_rect.collidepoint(event.pos):
+        crafting_tab = "alchemy"
+    elif crafting_tab == "smithing":
+        _handle_smithing_crafting(event, assets)
+    elif crafting_tab == "alchemy":
+        _handle_alchemy_crafting(event, assets)
 def _handle_vendor_clicks(event, assets):
     """Handle vendor GUI clicks."""
     global vendor_tab
@@ -1974,44 +2016,9 @@ def _handle_crafting_clicks(event, assets):
         _handle_smithing_crafting(event, assets)
     elif crafting_tab == "alchemy":
         _handle_alchemy_crafting(event, assets)
+    elif crafting_tab == "cooking":
+        draw_cooking_content(screen, assets, content_y)
 
-def _handle_smithing_crafting(event, assets):
-    """Handle smithing crafting clicks."""
-    global is_crafting, crafting_timer, item_to_craft
-    
-    crafting_recipes = [
-        (axe_button_rect, "Log", 5, assets["axe_item"], "Axe"),
-        (pickaxe_button_rect, "Log", 10, assets["pickaxe_item"], "Pickaxe"),
-        (helmet_button_rect, "Stone", 8, assets["helmet_item"], "Helmet"),
-        (chest_button_rect, "Stone", 15, assets["chest_item"], "Chest Armor"),
-        (boots_button_rect, "Stone", 6, assets["boots_item"], "Boots")
-    ]
-    
-    for button_rect, material, cost, item_obj, item_name in crafting_recipes:
-        if button_rect and button_rect.collidepoint(event.pos):
-            if get_item_count(material) >= cost:
-                is_crafting = True
-                crafting_timer = 0
-                item_to_craft = item_obj
-                remove_item_from_inventory(material, cost)
-                print(f"Crafting {item_name}...")
-            else:
-                print(f"Not enough {material.lower()}!")
-            break
-
-def _handle_alchemy_crafting(event, assets):
-    """Handle alchemy crafting clicks."""
-    global is_crafting, crafting_timer, item_to_craft
-    
-    if potion_button_rect and potion_button_rect.collidepoint(event.pos):
-        if get_item_count("Flower") >= 3:
-            is_crafting = True
-            crafting_timer = 0
-            item_to_craft = assets["potion_item"]
-            remove_item_from_inventory("Flower", 3)
-            print("Brewing a Potion...")
-        else:
-            print("Not enough flowers!")
 
 def _update_npc_animations(dt):
     """Update NPC idle animations."""
@@ -2246,6 +2253,7 @@ def load_assets():
     # --- Items ---
     potion_image = try_load_image("PotionR.png", (TILE_SIZE, TILE_SIZE), (150, 0, 150))
     coin_image = try_load_image("Coin.png", (TILE_SIZE, TILE_SIZE), (255, 215, 0))
+    sword_image = try_load_image("sword1.png", (TILE_SIZE, TILE_SIZE), (192, 192, 192))
     axe_image = try_load_image("axe.png", (TILE_SIZE, TILE_SIZE), (139, 69, 19))
     pickaxe_image = try_load_image("pickaxe.png", (TILE_SIZE, TILE_SIZE), (105, 105, 105))
     stone_image = try_load_image("stone.png", (TILE_SIZE // 2, TILE_SIZE // 2), (150, 150, 150))
@@ -2253,11 +2261,15 @@ def load_assets():
     chest_image = try_load_image("chest.png", (TILE_SIZE, TILE_SIZE), (139, 69, 19))
     helmet_image = try_load_image("helmet.png", (TILE_SIZE, TILE_SIZE), (105, 105, 105))
     boots_image = try_load_image("boots.png", (TILE_SIZE, TILE_SIZE), (101, 67, 33))
+    carrot_tile_image = try_load_image("carrot.png", (30, 30), (255, 140, 0))  # For world tiles
+    carrot_item_image = try_load_image("carrot_item.png", (TILE_SIZE, TILE_SIZE), (255, 140, 0))  # For inventory
+    crystal_image = try_load_image("crystal.png", (TILE_SIZE, TILE_SIZE), (0, 255, 255))
     # --- UI Icons ---
     backpack_icon = try_load_image("bag.png", (ICON_SIZE, ICON_SIZE), (101, 67, 33))
     crafting_icon = try_load_image("craft.png", (ICON_SIZE, ICON_SIZE), (160, 82, 45))
     equipment_icon = try_load_image("equipped.png", (ICON_SIZE, ICON_SIZE), (105, 105, 105))
     quest_icon = try_load_image("quest.png", (ICON_SIZE, ICON_SIZE), (255, 215, 0))
+
 
     # --- NPCs ---
     try:
@@ -2303,6 +2315,7 @@ def load_assets():
     log_item = Item("Log", log_image)
     axe_item = Item("Axe", axe_image, category="Weapon", damage=20)
     pickaxe_item = Item("Pickaxe", pickaxe_image, category="Weapon", damage=15)
+    sword_item = Item("Sword", sword_image, category="Weapon", damage=30)
     stone_item = Item("Stone", stone_image)
     ore_item = Item("Ore", ore_image)
     flower_item = Item("Flower", flower_images[0])
@@ -2311,6 +2324,8 @@ def load_assets():
     chest_item = Item("Chest Armor", chest_image, category="Armor", damage=0, defense=10)
     helmet_item = Item("Helmet", helmet_image, category="Helmet", damage=0, defense=5)
     boots_item = Item("Boots", boots_image, category="Boots", damage=0, defense=5)
+    carrot_item = Item("Carrot", carrot_item_image)
+    crystal_item = Item("Crystal", crystal_image)
     # --- Boss Door Frames ---
     boss_door_frames = load_boss_door_frames()
 
@@ -2328,6 +2343,7 @@ def load_assets():
         "leaf": leaf_image,
         "water": water_image,
         "path": path_image,
+        "carrot_tile": carrot_tile_image,
         # Portal / Dungeon
         "boss1_portal": boss1_portal,
         "portal": portal_image,
@@ -2355,9 +2371,12 @@ def load_assets():
         "flower_item": flower_item,
         "potion_item": potion_item,
         "coin_item": coin_item,
+        "sword_item": sword_item,
         "chest_item": chest_item,
         "helmet_item": helmet_item,
         "boots_item": boots_item,
+        "carrot_item": carrot_item,
+        "crystal_item": crystal_item,   
         # NPCs
         "npc_image": npc_image,
         "miner_image": miner_image,
@@ -2501,7 +2520,7 @@ def setup_colliders():
                     apply_map_data(map_data)
                 else:
                     generate_default_world()  # Use the function we defined above
-            except:
+            except: 
                 generate_default_world()  # Use the function we defined above
                 
     # Setup indoor colliders for houses
@@ -2513,8 +2532,13 @@ def setup_colliders():
     
 def draw_main_menu(screen, assets):
     """Draw the main menu screen with enhanced mouse hover effects."""
-    screen.fill((20, 30, 40))  # Dark blue background
-    
+    if "main_bg" not in assets:
+        bg = pygame.image.load("main.png").convert()
+        bg = pygame.transform.scale(bg, (WIDTH, HEIGHT))  # scale to fit window
+        assets["main_bg"] = bg
+
+    screen.blit(assets["main_bg"], (0, 0))
+
     # Get mouse position for hover effects
     mouse_pos = pygame.mouse.get_pos()
     
@@ -2662,9 +2686,9 @@ def give_starting_items(assets):
     add_item_to_inventory(assets["axe_item"])
     add_item_to_inventory(assets["pickaxe_item"])
     add_item_to_inventory(assets["potion_item"])
+    add_item_to_inventory(assets["ore_item"])
     add_item_to_inventory(assets["potion_item"])
-    add_item_to_inventory(assets["potion_item"])
-    add_item_to_inventory(assets["potion_item"])
+    add_item_to_inventory(assets["ore_item"])
 
 # COMPLETE BUG FIXES - Replace these functions in your code
 
@@ -3010,28 +3034,41 @@ def unequip_item_from_slot(slot_name):
             print("Inventory is full, cannot unequip.")
     return False
 # Fixed inventory click handling in main game loop
-def handle_inventory_mouse_down(mouse_pos):
-    """Handle starting to drag an item from inventory."""
+def handle_inventory_mouse_down(mouse_pos, button=1):
+    """Handle starting to drag an item from inventory, or right-click to equip."""
     global dragging_item, dragging_from_slot, drag_offset, inventory
-    
+
     if not show_inventory:
         return False
-    
+
     for row in range(4):
         for col in range(4):
             slot_x = INVENTORY_X + INVENTORY_GAP + col * (INVENTORY_SLOT_SIZE + INVENTORY_GAP)
             slot_y = INVENTORY_Y + 40 + INVENTORY_GAP + row * (INVENTORY_SLOT_SIZE + INVENTORY_GAP)
             slot_rect = pygame.Rect(slot_x, slot_y, INVENTORY_SLOT_SIZE, INVENTORY_SLOT_SIZE)
-            
+
             if slot_rect.collidepoint(mouse_pos):
                 item = inventory[row][col]
-                if item:
-                    # Start dragging
+                if not item:
+                    return False
+
+                # Left click = drag
+                if button == 1:
                     dragging_item = item
                     dragging_from_slot = (row, col)
                     drag_offset = (mouse_pos[0] - slot_rect.centerx, mouse_pos[1] - slot_rect.centery)
                     return True
+
+                # Right click = equip
+                elif button == 3:
+                    if (hasattr(item, 'category') and item.category in ["Weapon", "Armor", "Helmet", "Boots"]) or \
+                       item.name in ["Axe", "Pickaxe", "Sword", "Helmet", "Chest Armor", "Boots"]:
+                        if equip_item(item):
+                            inventory[row][col] = None
+                            print(f"Equipped {item.name}")
+                            return True
     return False
+
 
 def handle_inventory_mouse_up(mouse_pos):
     """Handle dropping an item in inventory or equipping it."""
@@ -3326,7 +3363,7 @@ def _handle_mouse_clicks(event, assets, screen):
         equipment_slot_rects = draw_equipment_panel(screen, assets)
         handle_equipment_click(event.pos, equipment_slot_rects)
     elif show_inventory:
-        handle_inventory_click(event.pos)
+        draw_inventory(screen, assets)  # Ensure inventory is drawn
 
 def _handle_vendor_clicks(event, assets):
     """Handle vendor GUI clicks."""
@@ -3376,39 +3413,103 @@ def _handle_sell_transactions(event, assets):
 def _handle_crafting_clicks(event, assets):
     """Handle crafting GUI clicks."""
     global crafting_tab, is_crafting, crafting_timer, item_to_craft
-    
+
+    # 1) Tab switching (use event.pos, not mouse_pos)
     if smithing_tab_rect and smithing_tab_rect.collidepoint(event.pos):
         crafting_tab = "smithing"
-    elif alchemy_tab_rect and alchemy_tab_rect.collidepoint(event.pos):
+        return
+    if alchemy_tab_rect and alchemy_tab_rect.collidepoint(event.pos):
         crafting_tab = "alchemy"
-    elif crafting_tab == "smithing":
+        return
+    if cooking_tab_rect and cooking_tab_rect.collidepoint(event.pos):
+        crafting_tab = "cooking"
+        return
+
+    # 2) Within the active tab, handle recipe button clicks
+    if crafting_tab == "smithing":
         _handle_smithing_crafting(event, assets)
     elif crafting_tab == "alchemy":
         _handle_alchemy_crafting(event, assets)
+    elif crafting_tab == "cooking":
+        _handle_cooking_crafting(event, assets)
+def _handle_cooking_crafting(dt, assets):
+    """
+    Handle the cooking process — starts when the player interacts with a campfire, stove, or cooking tile.
+    Works similarly to crafting or smithing but focused on food-related items.
+    """
+    global is_crafting, crafting_timer, item_to_craft, cooking_tab_rect
+
+    # --- Only run if cooking is active ---
+    if not is_crafting or item_to_craft is None:
+        return
+
+    # --- Update the timer ---
+    crafting_timer += dt
+
+    # --- Display cooking progress (optional floating text or GUI bar) ---
+    progress_ratio = crafting_timer / CRAFTING_TIME_MS
+    progress_ratio = min(1.0, progress_ratio)
+
+    # Optional: Draw progress bar if you have a cooking tab rect
+    if cooking_tab_rect:
+        bar_width = int(200 * progress_ratio)
+        bar_height = 12
+        bar_x = cooking_tab_rect.x + 30
+        bar_y = cooking_tab_rect.y + cooking_tab_rect.height - 40
+        pygame.draw.rect(assets["screen"], (100, 100, 100), (bar_x, bar_y, 200, bar_height))
+        pygame.draw.rect(assets["screen"], (255, 180, 80), (bar_x, bar_y, bar_width, bar_height))
+
+    # --- Check for completion ---
+    if crafting_timer >= CRAFTING_TIME_MS:
+        is_crafting = False
+        crafting_timer = 0
+
+        # Example: turn raw meat into cooked meat
+        if item_to_craft.name == "Raw Meat":
+            cooked_item = Item("Cooked Meat", assets.get("cooked_meat_img"), 1, category="food")
+            add_item_to_inventory(cooked_item)
+            floating_texts.append(FloatingText("+1 Cooked Meat", (player.rect.x, player.rect.y - 20), color=(255, 200, 100)))
+            play_sound("cooking_done", assets)
+
+        # Example: other recipes
+        elif item_to_craft.name == "Fish":
+            cooked_item = Item("Grilled Fish", assets.get("grilled_fish_img"), 1, category="food")
+            add_item_to_inventory(cooked_item)
+            floating_texts.append(FloatingText("+1 Grilled Fish", (player.rect.x, player.rect.y - 20), color=(255, 220, 150)))
+            play_sound("cooking_done", assets)
+
+        else:
+            # Unknown recipe → fail or just return item
+            floating_texts.append(FloatingText("Cooking failed", (player.rect.x, player.rect.y - 20), color=(255, 80, 80)))
+
+        item_to_craft = None
 
 def _handle_smithing_crafting(event, assets):
-    """Handle smithing crafting clicks."""
+    """Handle clicks on smithing crafting buttons."""
     global is_crafting, crafting_timer, item_to_craft
-    
+
     crafting_recipes = [
-        (axe_button_rect, "Log", 5, assets["axe_item"], "Axe"),
-        (pickaxe_button_rect, "Log", 10, assets["pickaxe_item"], "Pickaxe"),
-        (helmet_button_rect, "Stone", 8, assets["helmet_item"], "Helmet"),
-        (chest_button_rect, "Stone", 15, assets["chest_item"], "Chest Armor"),
-        (boots_button_rect, "Stone", 6, assets["boots_item"], "Boots")
+        (axe_button_rect,   "Log",   5,  assets["axe_item"],     "Axe"),
+        (pickaxe_button_rect,"Log",  10, assets["pickaxe_item"], "Pickaxe"),
+        (helmet_button_rect, "Stone",8,  assets["helmet_item"],  "Helmet"),
+        (chest_button_rect,  "Stone",15, assets["chest_item"],   "Chest Armor"),
+        (boots_button_rect,  "Stone",6,  assets["boots_item"],   "Boots"),
+        (sword_button_rect,  "Ore",  2,  assets["sword_item"],   "Sword"),  # ← added here
     ]
-    
+
     for button_rect, material, cost, item_obj, item_name in crafting_recipes:
         if button_rect and button_rect.collidepoint(event.pos):
             if get_item_count(material) >= cost:
+                remove_item_from_inventory(material, cost)
                 is_crafting = True
                 crafting_timer = 0
                 item_to_craft = item_obj
-                remove_item_from_inventory(material, cost)
-                print(f"Crafting {item_name}...")
+                print(f"⚒️ Crafting {item_name}...")
             else:
-                print(f"Not enough {material.lower()}!")
+                print(f"❌ Not enough {material.lower()} to craft {item_name}!")
             break
+
+
 
 def _handle_alchemy_crafting(event, assets):
     """Handle alchemy crafting clicks."""
@@ -3874,11 +3975,11 @@ def handle_crystal_mining(player_world_rect, assets):
 def setup_zone2():
     """Setup Zone 2 with its unique resources and NPCs."""
     global crystal_rects, water_tiles, zone2_merchant_rect, zone2_return_portal
-    global tree_rects, stone_rects, flower_tiles, leaf_tiles
+    global tree_rects, stone_rects, flower_tiles, leaf_tiles, player
     
     # Load zone2 map
     map_data = load_zone2_map("zone2.txt")
-    
+    update_camera()
     # Clear existing world objects
     tree_rects.clear()
     stone_rects.clear()
@@ -3916,7 +4017,9 @@ def _draw_game_world(screen, assets, enemy_frames):
     
     if current_level == "world":
         draw_world(screen, assets)
-    elif current_level == "zone2":  # Add this
+    elif current_level == "zone2":
+        player.rect.topleft = player_pos.topleft
+        update_camera()# Add this
         draw_zone2(screen, assets)
     elif current_level == "dungeon":
         draw_dungeon(screen, assets, enemy_frames)
@@ -4046,15 +4149,19 @@ def draw_world(screen, assets):
     # Draw leaves
     for lx, ly in leaf_tiles:
         screen.blit(assets["leaf"], (lx - map_offset_x, ly - map_offset_y))
+    # Draw carrots
+    for cx, cy, idx in carrot_tiles:
+        if "carrot_tile" in assets:
+            carrot_img = pygame.transform.scale(assets["carrot_tile"], (30, 30))
 
+            screen.blit(carrot_img, (cx - map_offset_x, cy - map_offset_y))
     # Draw the dungeon portal
     if dungeon_portal:
         screen.blit(assets["portal"], (dungeon_portal.x - map_offset_x, dungeon_portal.y - map_offset_y))
 
     # Draw zone2 portal
     if zone2_portal:
-        screen.blit(assets["portal"], (zone2_portal.x - map_offset_x, zone2_portal.y - map_offset_y))
-        print("DEBUG: zone2_portal =", zone2_portal)
+        screen.blit(assets["portal"], (zone2_portal.x - map_offset_x, zone2_portal.y - map_offset_y ))
     # Draw all houses
     for i, house in enumerate(house_list):
         # Cycle through the 3 house types
@@ -4085,6 +4192,8 @@ def get_shop_items(assets):
         "Stone": {"item": assets["stone_item"], "buy_price": 8, "sell_price": 3},
         "Ore": {"item": assets["ore_item"], "buy_price": 20, "sell_price": 12},
         "Flower": {"item": assets["flower_item"], "buy_price": 10, "sell_price": 4},
+        "Carrot": {"item": assets["carrot_item"], "buy_price": 12, "sell_price": 4},
+        "Crystal": {"item": assets["crystal_item"], "buy_price": 50, "sell_price": 25},
     }
 
 def draw_vendor_gui(screen, assets):
@@ -4575,7 +4684,13 @@ def draw_tooltip_for_nearby_objects(screen, font):
                     tooltip_text = "Flower [e]"
                     tooltip_pos = (fx - map_offset_x, fy - map_offset_y)
                     break
-
+            # Carrots: show only on mouse hover
+            for cx, cy, idx in carrot_tiles:
+                carrot_rect = pygame.Rect(cx - map_offset_x, cy - map_offset_y, 30, 30)
+                if carrot_rect.collidepoint(mouse_pos):
+                    tooltip_text = "Carrot [e]"
+                    tooltip_pos = (cx - map_offset_x, cy - map_offset_y)
+                    break
         if tooltip_text is None:
             # Trees: show only on mouse hover
             for tree in tree_rects:
@@ -4725,8 +4840,8 @@ def draw_inventory(screen, assets):
 
 def draw_crafting_panel(screen, assets, is_hovering):
     """Draws the crafting GUI with tabs for smithing and alchemy, plus a close button."""
-    global axe_button_rect, pickaxe_button_rect, potion_button_rect
-    global alchemy_tab_rect, smithing_tab_rect, show_crafting
+    global axe_button_rect, pickaxe_button_rect, potion_button_rect, sword_button_rect
+    global alchemy_tab_rect, smithing_tab_rect, cooking_tab_rect, show_crafting, crafting_tab
 
     if not show_crafting:
         return
@@ -4768,6 +4883,19 @@ def draw_crafting_panel(screen, assets, is_hovering):
 
     smithing_tab_rect = pygame.Rect(CRAFTING_X + tab_spacing, tab_y, tab_width, tab_height)
     alchemy_tab_rect = pygame.Rect(CRAFTING_X + tab_spacing + tab_width + 5, tab_y, tab_width, tab_height)
+    cooking_tab_rect = pygame.Rect(
+        CRAFTING_X + tab_spacing + 2 * (tab_width + 5),  # after alchemy
+        tab_y,
+        tab_width,
+        tab_height
+    )
+
+    cooking_color = (150, 100, 50) if crafting_tab == "cooking" else (60, 60, 60)
+    pygame.draw.rect(screen, cooking_color, cooking_tab_rect)
+    pygame.draw.rect(screen, (255, 255, 255), cooking_tab_rect, 2)
+    cooking_text = assets["small_font"].render("Cooking", True, (255, 255, 255))
+    screen.blit(cooking_text, cooking_text.get_rect(center=cooking_tab_rect.center))
+
 
     smithing_color = (80, 150, 80) if crafting_tab == "smithing" else (60, 60, 60)
     pygame.draw.rect(screen, smithing_color, smithing_tab_rect)
@@ -4786,52 +4914,78 @@ def draw_crafting_panel(screen, assets, is_hovering):
     content_height = CRAFTING_PANEL_HEIGHT - (content_y - CRAFTING_Y)
 
     if crafting_tab == "smithing":
-        draw_smithing_content(screen, assets, is_hovering, content_y)
+        draw_smithing_content(screen, assets, content_y)
     elif crafting_tab == "alchemy":
-        draw_alchemy_content(screen, assets, is_hovering, content_y)
+        draw_alchemy_content(screen, assets, content_y)
+def draw_cooking_content(screen, assets, content_y):
+    """Draws the cooking crafting options (food recipes)."""
+    global stew_button_rect, bread_button_rect
 
-def draw_smithing_content(screen, assets, is_hovering, content_y):
-    """Draws the smithing crafting options with armor."""
+    button_width, button_height, gap = 180, 50, 20
+    meat_count = get_item_count("Meat")
+    herb_count = get_item_count("Herb")
+    wheat_count = get_item_count("Wheat")
+
+    # Example recipes
+    stew_button_rect = pygame.Rect(CRAFTING_X + gap, content_y + gap, button_width, button_height)
+    bread_button_rect = pygame.Rect(CRAFTING_X + gap, content_y + gap + (button_height + gap), button_width, button_height)
+
+    recipes = [
+        (stew_button_rect, "Stew", {"Meat": 2, "Herb": 1}),
+        (bread_button_rect, "Bread", {"Wheat": 3}),
+    ]
+
+    mouse_pos = pygame.mouse.get_pos()
+
+    for rect, name, reqs in recipes:
+        can_craft = all(get_item_count(item) >= count for item, count in reqs.items())
+
+        # Default text
+        text_to_display = f"Cook {name}"
+        color = (150, 100, 50) if can_craft else (70, 50, 30)
+
+        # Hover shows requirements inside button
+        if rect.collidepoint(mouse_pos):
+            req_text = ", ".join(f"{item} {get_item_count(item)}/{count}" for item, count in reqs.items())
+            text_to_display = f"{name}: {req_text}"
+            color = (200, 120, 60) if can_craft else (80, 60, 40)
+
+        pygame.draw.rect(screen, color, rect)
+        pygame.draw.rect(screen, (200, 200, 200), rect, 2)
+
+        text_surface = assets["small_font"].render(text_to_display, True, (255, 255, 255))
+        text_rect = text_surface.get_rect(center=rect.center)
+        screen.blit(text_surface, text_rect)
+def draw_smithing_content(screen, assets, content_y):
+
     global axe_button_rect, pickaxe_button_rect, chest_button_rect, helmet_button_rect, boots_button_rect
-    
+    global sword_button_rect
     button_width, button_height, gap = 180, 50, 20
     log_count = get_item_count("Log")
     stone_count = get_item_count("Stone")
-    
-    # Calculate positions for 5 items (2 columns)
+    ore_count = get_item_count("Ore")
+
     col1_x = CRAFTING_X + gap
     col2_x = CRAFTING_X + gap + button_width + gap
     
-    # Weapons (left column) - use logs
     axe_button_rect = pygame.Rect(col1_x, content_y + gap, button_width, button_height)
-    req_logs_axe = 5
-    
     pickaxe_button_rect = pygame.Rect(col1_x, content_y + gap + (button_height + gap), button_width, button_height)
-    req_logs_pickaxe = 10
-    
-    # Armor (right column) - use stones with higher requirements
+    sword_button_rect = pygame.Rect(col1_x, content_y + gap + 2 * (button_height + gap), button_width, button_height)
     helmet_button_rect = pygame.Rect(col2_x, content_y + gap, button_width, button_height)
-    req_stone_helmet = 8  # Increased from 2
-    
     chest_button_rect = pygame.Rect(col2_x, content_y + gap + (button_height + gap), button_width, button_height)
-    req_stone_chest = 15  # Increased from 2
-    
     boots_button_rect = pygame.Rect(col2_x, content_y + gap + 2 * (button_height + gap), button_width, button_height)
-    req_stone_boots = 6   # Increased from 2
     
-    # Define all craftable items
     buttons = [
-        # Weapons (use logs)
-        (axe_button_rect, "axe", req_logs_axe, assets["axe_item"], "Log", log_count),
-        (pickaxe_button_rect, "pickaxe", req_logs_pickaxe, assets["pickaxe_item"], "Log", log_count),
-        
-        # Armor (use stones)
-        (helmet_button_rect, "helmet", req_stone_helmet, assets["helmet_item"], "Stone", stone_count),
-        (chest_button_rect, "chest", req_stone_chest, assets["chest_item"], "Stone", stone_count),
-        (boots_button_rect, "boots", req_stone_boots, assets["boots_item"], "Stone", stone_count),
+        (axe_button_rect, "axe", 5, assets["axe_item"], "Log", log_count),
+        (pickaxe_button_rect, "pickaxe", 2, assets["pickaxe_item"], "log", log_count),
+        (sword_button_rect, "sword", 2, assets["sword_item"], "ore", ore_count),
+        (helmet_button_rect, "helmet", 8, assets["helmet_item"], "Stone", stone_count),
+        (chest_button_rect, "chest", 15, assets["chest_item"], "Stone", stone_count),
+        (boots_button_rect, "boots", 6, assets["boots_item"], "Stone", stone_count),
     ]
     
-    # Draw all buttons
+    mouse_pos = pygame.mouse.get_pos()
+    
     for rect, item_name, required_amount, item_obj, material_type, material_count in buttons:
         can_craft = material_count >= required_amount
         
@@ -4839,23 +4993,21 @@ def draw_smithing_content(screen, assets, is_hovering, content_y):
             progress = (crafting_timer / CRAFTING_TIME_MS) * 100
             text_to_display = f"Crafting... {int(progress)}%"
             color = (120, 120, 120)
-        elif is_hovering == item_name:
+        
+        elif rect.collidepoint(mouse_pos):  # <-- hover detection here
             text_to_display = f"{item_obj.name}: {material_count}/{required_amount} {material_type}"
             color = (0, 100, 0) if can_craft else (50, 50, 50)
+        
         else:
             text_to_display = f"Craft {item_obj.name}"
             color = (0, 150, 0) if can_craft else (70, 70, 70)
-
+        
         pygame.draw.rect(screen, color, rect)
         pygame.draw.rect(screen, (150, 150, 150), rect, 2)
         
-        # Use smaller font for longer text
         text_surface = assets["small_font"].render(text_to_display, True, (255, 255, 255))
-        
-        # Center the text, but handle text that might be too wide
         text_rect = text_surface.get_rect()
         if text_rect.width > rect.width - 10:
-            # Scale down text if too wide
             scale_factor = (rect.width - 10) / text_rect.width
             new_width = int(text_rect.width * scale_factor)
             new_height = int(text_rect.height * scale_factor)
@@ -4864,10 +5016,10 @@ def draw_smithing_content(screen, assets, is_hovering, content_y):
         text_rect = text_surface.get_rect(center=rect.center)
         screen.blit(text_surface, text_rect)
 
-def draw_alchemy_content(screen, assets, is_hovering, content_y):
+def draw_alchemy_content(screen, assets, content_y):
     """Draws the alchemy crafting options."""
     global potion_button_rect
-    
+
     button_width, button_height, gap = 180, 50, 20
     flower_count = get_item_count("Flower")
 
@@ -4876,22 +5028,29 @@ def draw_alchemy_content(screen, assets, is_hovering, content_y):
     req_flowers = 3
 
     can_craft = flower_count >= req_flowers
-    
+    mouse_pos = pygame.mouse.get_pos()
+
     if is_crafting and item_to_craft and item_to_craft.name == "Potion":
         progress = (crafting_timer / CRAFTING_TIME_MS) * 100
         text_to_display = f"Brewing... {int(progress)}%"
         color = (120, 120, 120)
-    elif is_hovering == "potion":
+
+    elif potion_button_rect.collidepoint(mouse_pos):  # <-- hover detection
         text_to_display = f"Potion: {flower_count}/{req_flowers} Flowers"
         color = (100, 0, 100) if can_craft else (50, 50, 50)
+
     else:
-        text_to_display = f"Brew Potion"
+        text_to_display = "Brew Potion"
         color = (150, 0, 150) if can_craft else (70, 70, 70)
 
+    # Draw button
     pygame.draw.rect(screen, color, potion_button_rect)
     pygame.draw.rect(screen, (150, 150, 150), potion_button_rect, 2)
+
+    # Draw text centered
     text_surface = assets["small_font"].render(text_to_display, True, (255, 255, 255))
-    screen.blit(text_surface, text_surface.get_rect(center=potion_button_rect.center))
+    text_rect = text_surface.get_rect(center=potion_button_rect.center)
+    screen.blit(text_surface, text_rect)
 def draw_equipment_panel(screen, assets):
     """Draws a polished equipment GUI with 2 rows, 4 columns, stats display, and a close button."""
     global equipment_slots, show_equipment
@@ -4931,7 +5090,7 @@ def draw_equipment_panel(screen, assets):
         pygame.time.wait(150)
         show_equipment = False
         print("❌ Equipment panel closed.")
-
+    
     # --- Slot layout ---
     slot_names = [
         ["weapon", "helmet", "armor", "boots"],
@@ -5154,60 +5313,6 @@ def handle_movement(keys):
 
     return dx, dy
 
-def handle_dash(current_time):
-    """Simple dash ability"""
-    global dash_cooldown, is_dashing, map_offset_x, map_offset_y
-    
-    if current_time - dash_cooldown < 3000:  # 3 second cooldown
-        return False
-    
-    if is_attacking:
-        return False
-    
-    # Get dash direction
-    dash_direction = "down"  # default
-    if player_movement_history:
-        dash_direction = player_movement_history[-1][0]
-    
-    # Dash distance
-    dash_amount = 80
-    
-    # Apply dash movement
-    if dash_direction == "up":
-        map_offset_y -= dash_amount
-    elif dash_direction == "down":
-        map_offset_y += dash_amount
-    elif dash_direction == "left":
-        map_offset_x -= dash_amount
-    elif dash_direction == "right":
-        map_offset_x += dash_amount
-    
-    dash_cooldown = current_time
-    
-    # Visual feedback
-    floating_texts.append(FloatingText(
-        "Dash!",
-        (player_pos.x, player_pos.y - 20),
-        color=(100, 255, 255),
-        lifetime=500
-    ))
-    
-    print(f"Dashed {dash_direction}!")
-    return True
-
-def handle_block():
-    """Simple block that adds defense"""
-    # Add temporary defense boost
-    player.add_status_effect("block", 1000, defense=15)
-    
-    floating_texts.append(FloatingText(
-        "Block!",
-        (player_pos.x, player_pos.y - 20),
-        color=(100, 100, 255),
-        lifetime=500
-    ))
-    
-    print("Blocking! +15 Defense for 1 second")
 
 def handle_collision(new_world_rect):
     """Checks for collision with world objects depending on current level."""
@@ -5604,10 +5709,6 @@ def handle_playing_state(screen, assets, dt):
                             print(f"Hit {enemy.type} for {base_damage} dmg!")
 
             # Movement/utility controls
-            elif event.key == pygame.K_2:
-                handle_block()
-            elif event.key == pygame.K_3:
-                handle_dash(current_time)
             elif event.key == pygame.K_h:
                 use_potion()
 
@@ -5672,8 +5773,10 @@ def handle_playing_state(screen, assets, dt):
                                 break
                         else:
                             _handle_flower_picking(player_world_rect, assets)
+                            _handle_carrot_picking(player_world_rect, assets)
                     else:
                         _handle_flower_picking(player_world_rect, assets)
+                        _handle_carrot_picking(player_world_rect, assets)
                 # Add a new section for ZONE2 level interactions:
                 elif current_level == "zone2":
                     if handle_zone2_return_portal(player_world_rect):
@@ -5771,13 +5874,13 @@ def handle_playing_state(screen, assets, dt):
                     pause_menu_selected_option = 0
 
         # Mouse clicks
-        elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+        elif event.type == pygame.MOUSEBUTTONDOWN:
             mouse_pos = event.pos
 
-            # Handle inventory drag start FIRST (before other handlers)
+            # Handle inventory clicks first
             if show_inventory:
-                if handle_inventory_mouse_down(mouse_pos):
-                    continue  # Skip other click handlers while starting drag
+                if handle_inventory_mouse_down(mouse_pos, event.button):
+                    continue  # Skip other click handlers if inventory handled it
     
             # general click handlers (crafting, vendor, etc.)
             if show_vendor_gui:
@@ -5808,6 +5911,9 @@ def handle_playing_state(screen, assets, dt):
         elif event.type == pygame.MOUSEBUTTONUP and event.button == 1:
             if show_inventory and dragging_item:
                 handle_inventory_mouse_up(event.pos)
+            elif event.button == 3:  # right click
+                handle_equipment_click(event.pos)
+
     # -------------------------
     # Per-frame state updates (animations, movement)
     # -------------------------
