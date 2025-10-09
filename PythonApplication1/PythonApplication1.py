@@ -1161,7 +1161,6 @@ def play_music(music_key, loop=True):
         print(f"Could not play music '{music_key}': {e}")
         current_music = None
 
-# Add this function to stop music
 def stop_music():
     """Stop all background music."""
     global current_music
@@ -1256,22 +1255,22 @@ def update_camera():
     margin_x = WIDTH // 4
     margin_y = HEIGHT // 4
 
-    if current_level == "zone2":
-        margin_x = WIDTH // 8   # smaller margins = faster catch-up
-        margin_y = HEIGHT // 8
-    else:
-        margin_x = WIDTH // 4
-        margin_y = HEIGHT // 4
-    # Only move camera if player goes outside the margin box
-    if player.rect.centerx - map_offset_x < margin_x:
-        map_offset_x = player.rect.centerx - margin_x
-    elif player.rect.centerx - map_offset_x > WIDTH - margin_x:
-        map_offset_x = player.rect.centerx - (WIDTH - margin_x)
+    player_world_rect = get_player_world_rect()
+    player_world_x = player_world_rect.centerx
+    player_world_y = player_world_rect.centery
 
-    if player.rect.centery - map_offset_y < margin_y:
-        map_offset_y = player.rect.centery - margin_y
-    elif player.rect.centery - map_offset_y > HEIGHT - margin_y:
-        map_offset_y = player.rect.centery - (HEIGHT - margin_y)
+    if player_world_x - map_offset_x < margin_x:
+        map_offset_x = player_world_x - margin_x
+    elif player_world_x - map_offset_x > WIDTH - margin_x:
+        map_offset_x = player_world_x - (WIDTH - margin_x)
+    if player_world_y - map_offset_y < margin_y:
+        map_offset_y = player_world_y - margin_y
+    elif player_world_y - map_offset_y > HEIGHT - margin_y:
+        map_offset_y = player_world_y - (HEIGHT - margin_y)
+    
+    # ADD THIS LINE:
+    if current_level == "zone2":
+        clamp_camera_to_zone2()
 
 def handle_pause_menu_input(event, assets, dt):
     """Handle input for the pause menu."""
@@ -3683,31 +3682,52 @@ def _complete_chopping(current_time, assets):
     current_direction = "idle"
 
 def _complete_mining(current_time, assets):
-    """Complete stone/ore mining action."""
+    """Complete stone/ore/crystal mining action."""
     global is_mining, is_swinging, mining_timer, mining_target_stone, current_direction
     global mine_sound_played
 
+    # 🪨 Handle normal stone/ore mining
     if mining_target_stone in stone_rects:
         stone_rects.remove(mining_target_stone)
         chopped_stones[(mining_target_stone.x, mining_target_stone.y,
                        mining_target_stone.width, mining_target_stone.height)] = current_time
         
         # Play mine sound
-        if assets["mine_sound"]:
+        if assets.get("mine_sound"):
             assets["mine_sound"].play()
         
         if current_level == "dungeon":
             add_item_to_inventory(assets["ore_item"])
-            print("Mined ore!")
+            print("⛏️ Mined ore!")
         else:
             add_item_to_inventory(assets["stone_item"])
-            print("Mined a stone!")
-    
+            print("🪨 Mined a stone!")
+
+    # 💎 Handle crystal mining (Zone 2)
+    elif mining_target_stone in crystal_rects:
+        crystal_rects.remove(mining_target_stone)
+        chopped_stones[(mining_target_stone.x, mining_target_stone.y,
+                       mining_target_stone.width, mining_target_stone.height)] = current_time
+
+        # Play mine sound
+        if assets.get("mine_sound"):
+            assets["mine_sound"].play()
+
+        # Give crystal item if available
+        if "crystal_item" in assets:
+            add_item_to_inventory(assets["crystal_item"])
+            print("💎 Mined a glowing crystal!")
+        else:
+            print("⚠ No crystal item found in assets!")
+
+    # Reset mining state
     is_mining = False
     is_swinging = False
     mining_timer = 0
     mining_target_stone = None
     current_direction = "idle"
+    mine_sound_played = False
+
 
 def _is_ui_blocking_movement():
     """Check if any UI is blocking player movement."""
@@ -3719,7 +3739,7 @@ def _handle_player_movement(dx, dy):
     """Handle player movement based on current level."""
     global map_offset_x, map_offset_y, player_pos, last_direction, current_direction
     
-    if current_level == "world" or current_level == "dungeon":
+    if current_level in ["world", "dungeon", "zone2"]:  # ADD "zone2" here
         new_player_world_rect = get_player_world_rect().move(dx, dy)
         if not handle_collision(new_player_world_rect):
             map_offset_x += dx
@@ -3783,15 +3803,19 @@ def draw_dungeon(screen, assets, enemy_frames):
             text.draw(screen, assets["small_font"], map_offset_x, map_offset_y)
 def draw_zone2(screen, assets):
     """Draw Zone 2 with its unique features."""
-    # Draw grass base
-    for row in range(HEIGHT // TILE_SIZE + 2):
-        for col in range(WIDTH // TILE_SIZE + 2):
-            x = col * TILE_SIZE - (map_offset_x % TILE_SIZE)
-            y = row * TILE_SIZE - (map_offset_y % TILE_SIZE)
+    # Draw grass base - FIXED to match draw_world pattern
+    start_col = map_offset_x // TILE_SIZE
+    start_row = map_offset_y // TILE_SIZE
+    cols_to_draw = (WIDTH // TILE_SIZE) + 3
+    rows_to_draw = (HEIGHT // TILE_SIZE) + 3
+    
+    for row in range(start_row, start_row + rows_to_draw):
+        for col in range(start_col, start_col + cols_to_draw):
+            x, y = col * TILE_SIZE, row * TILE_SIZE
             # Use a slightly different grass color for zone2
             grass_tinted = assets["grass"].copy()
             grass_tinted.fill((180, 255, 180), special_flags=pygame.BLEND_MULT)
-            screen.blit(grass_tinted, (x, y))
+            screen.blit(grass_tinted, (x - map_offset_x, y - map_offset_y))
     
     # Draw water tiles
     for wx, wy in water_tiles:
@@ -3859,33 +3883,23 @@ def load_zone2_map(filename="zone2.txt"):
         'borders': [],
         'crystals': [],
         'water': [],
-        'return_portal': None
+        'return_portal': None,
+        'width': 0,
+        'height': 0
     }
-    
-    tile_mapping = {
-        'T': 'tree',
-        'S': 'stone', 
-        'F': 'flower',
-        'L': 'leaf',
-        'P': 'return_portal',
-        'C': 'crystal',
-        'W': 'water',
-        'M': 'merchant',
-        '@': 'player_spawn',
-        '.': 'grass'
-    }
-    
+
     try:
         with open(filename, 'r') as f:
-            lines = f.readlines()
+            lines = [line.rstrip('\n') for line in f if not line.startswith('#')]
+
+            # 🧩 Add these two lines to capture map dimensions
+            map_data['width'] = len(lines[0]) * TILE_SIZE if lines else 0
+            map_data['height'] = len(lines) * TILE_SIZE
+
             for row, line in enumerate(lines):
-                # Skip comment lines
-                if line.startswith('#'):
-                    continue
-                    
-                for col, char in enumerate(line.strip()):
+                for col, char in enumerate(line):
                     x, y = col * TILE_SIZE, row * TILE_SIZE
-                    
+
                     if char == '@':
                         map_data['spawn_point'] = (x, y)
                     elif char == 'P':
@@ -3915,12 +3929,12 @@ def load_zone2_map(filename="zone2.txt"):
                     elif char == 'M':
                         map_data['entities'].append({
                             'type': 'merchant',
-                            'pos': (x, y)
-                        })
+                            'pos': (x, y)})
     except FileNotFoundError:
         print(f"Could not load zone2 map: {filename}")
         
     return map_data
+
 def handle_zone2_portal_interaction(player_world_rect):
     """Handle entering zone2 from world."""
     global current_level, map_offset_x, map_offset_y, player_pos
@@ -3971,30 +3985,32 @@ def handle_crystal_mining(player_world_rect, assets):
                 current_direction = "idle"
                 return True
     return False
-# Add this function to setup zone2
+
+
 def setup_zone2():
     """Setup Zone 2 with its unique resources and NPCs."""
     global crystal_rects, water_tiles, zone2_merchant_rect, zone2_return_portal
-    global tree_rects, stone_rects, flower_tiles, leaf_tiles, player
-    
-    # Load zone2 map
+    global tree_rects, stone_rects, flower_tiles, leaf_tiles
+    global zone2_width, zone2_height  # ⬅️ Add this
+
     map_data = load_zone2_map("zone2.txt")
-    update_camera()
-    # Clear existing world objects
+
+    # Clear old data
     tree_rects.clear()
     stone_rects.clear()
     flower_tiles.clear()
     leaf_tiles.clear()
     crystal_rects.clear()
     water_tiles.clear()
-    
+
     # Apply map data
     tree_rects.extend(map_data['borders'])
     crystal_rects.extend(map_data['crystals'])
     water_tiles.extend(map_data['water'])
     zone2_return_portal = map_data['return_portal']
-    
-    # Apply tiles
+    zone2_width = map_data['width']
+    zone2_height = map_data['height']
+
     for tile in map_data['tiles']:
         if tile['type'] == 'stone':
             stone_rects.append(tile['rect'])
@@ -4002,14 +4018,13 @@ def setup_zone2():
             flower_tiles.append(tile['pos'])
         elif tile['type'] == 'leaf':
             leaf_tiles.append(tile['pos'])
-    
-    # Apply entities
+
     for entity in map_data['entities']:
         if entity['type'] == 'merchant':
-            zone2_merchant_rect = pygame.Rect(entity['pos'][0], entity['pos'][1], 
-                                             PLAYER_SIZE, PLAYER_SIZE)
-    
+            zone2_merchant_rect = pygame.Rect(entity['pos'][0], entity['pos'][1], PLAYER_SIZE, PLAYER_SIZE)
+
     return map_data['spawn_point']
+
 
 def _draw_game_world(screen, assets, enemy_frames):
     """Draw the appropriate game world based on current level."""
@@ -4019,7 +4034,6 @@ def _draw_game_world(screen, assets, enemy_frames):
         draw_world(screen, assets)
     elif current_level == "zone2":
         player.rect.topleft = player_pos.topleft
-        update_camera()# Add this
         draw_zone2(screen, assets)
     elif current_level == "dungeon":
         draw_dungeon(screen, assets, enemy_frames)
@@ -4750,11 +4764,63 @@ def draw_tooltip_for_nearby_objects(screen, font):
             tooltip_text = "Exit [e]"
             tooltip_pos = door_zone.topleft
     elif current_level == "zone2":
-        # Inside zone2: Portal back to world check (proximity-based, not mouse hover)
-        if zone2_portal and player_world_rect.colliderect(zone2_portal.inflate(20, 20)):
-            portal_screen = world_to_screen_rect(zone2_portal)
+        # Exit portal (proximity-based)
+        if zone2_return_portal and player_world_rect.colliderect(zone2_return_portal.inflate(20, 20)):
+            portal_screen = world_to_screen_rect(zone2_return_portal)
             tooltip_text = "Exit [e]"
             tooltip_pos = (portal_screen.x, portal_screen.y)
+
+        # Mouse hover tooltips if nothing else yet
+        if tooltip_text is None:
+            # Trees
+            for tree in tree_rects:
+                tree_screen = world_to_screen_rect(tree)
+                if tree_screen.collidepoint(mouse_pos):
+                    tooltip_text = "Tree [e]"
+                    tooltip_pos = (tree_screen.x, tree_screen.y)
+                    break
+
+        if tooltip_text is None:
+            # Stones
+            for stone in stone_rects:
+                stone_screen = world_to_screen_rect(stone)
+                if stone_screen.collidepoint(mouse_pos):
+                    tooltip_text = "Stone [e]"
+                    tooltip_pos = (stone_screen.x, stone_screen.y)
+                    break
+
+        if tooltip_text is None:
+            # Crystals
+            for crystal in crystal_rects:
+                crystal_screen = world_to_screen_rect(crystal)
+                if crystal_screen.collidepoint(mouse_pos):
+                    tooltip_text = "Crystal [e]"
+                    tooltip_pos = (crystal_screen.x, crystal_screen.y)
+                    break
+
+        if tooltip_text is None:
+            # Flowers
+            for fx, fy, idx in flower_tiles:
+                flower_rect = pygame.Rect(fx - map_offset_x, fy - map_offset_y, 30, 30)
+                if flower_rect.collidepoint(mouse_pos):
+                    tooltip_text = "Flower [e]"
+                    tooltip_pos = (fx - map_offset_x, fy - map_offset_y)
+                    break
+
+        if tooltip_text is None:
+            # Merchant
+            if zone2_merchant_rect:
+                merchant_screen = pygame.Rect(
+                    zone2_merchant_rect.x - map_offset_x,
+                    zone2_merchant_rect.y - map_offset_y,
+                    zone2_merchant_rect.width,
+                    zone2_merchant_rect.height
+                )
+                if merchant_screen.collidepoint(mouse_pos):
+                    tooltip_text = "Merchant [e]"
+                    tooltip_pos = (merchant_screen.x, merchant_screen.y)
+
+
     elif current_level == "dungeon":
         # Inside dungeon: Boss door check (proximity-based, not mouse hover)
         if boss1_portal and player_world_rect.colliderect(boss1_portal.inflate(30, 30)):
@@ -5430,6 +5496,22 @@ def execute_save_slot_selection():
     else:
         start_new_game()
         game_state = "playing"
+def clamp_camera_to_zone2():
+    """Prevent camera from going beyond zone2 map boundaries."""
+    global map_offset_x, map_offset_y
+    
+    # Assuming zone2 uses similar dimensions to your other maps
+    # Adjust ZONE2_MAP_WIDTH and ZONE2_MAP_HEIGHT based on your actual zone2 map size
+    ZONE2_MAP_WIDTH = 50 * TILE_SIZE  # Example: 50 tiles wide
+    ZONE2_MAP_HEIGHT = 50 * TILE_SIZE  # Example: 50 tiles tall
+    
+    # Clamp horizontal offset
+    max_offset_x = ZONE2_MAP_WIDTH - WIDTH
+    map_offset_x = max(0, min(map_offset_x, max_offset_x))
+    
+    # Clamp vertical offset
+    max_offset_y = ZONE2_MAP_HEIGHT - HEIGHT
+    map_offset_y = max(0, min(map_offset_y, max_offset_y))
 
 def execute_menu_option():
     """Execute the selected menu option."""
@@ -5495,7 +5577,6 @@ def main():
     screen, clock = init()
     assets = load_assets()
     load_save_slots()
-
     while True:
         dt = clock.tick(60)
         if game_state == "main_menu":
@@ -5791,8 +5872,30 @@ def handle_playing_state(screen, assets, dt):
                         pass  # Portal handled
                     elif handle_crystal_mining(player_world_rect, assets):
                         pass  # Crystal mining started
+                    elif equipment_slots["weapon"] and equipment_slots["weapon"].name == "Axe":
+                        for tree in list(tree_rects):  # <-- you need a separate list for Zone2 trees
+                            if player_world_rect.colliderect(tree.inflate(20, 20)):
+                                is_chopping = True
+                                chopping_target_tree = tree
+                                chopping_timer = 0
+                                current_direction = "idle"
+                                break
+                        else:
+                            _handle_flower_picking(player_world_rect, assets)
+
+                    elif equipment_slots["weapon"] and equipment_slots["weapon"].name == "Pickaxe":
+                        for stone in list(stone_rects):  # <-- same for Zone2 stones
+                            if player_world_rect.colliderect(stone.inflate(20, 20)):
+                                is_mining = True
+                                mining_target_stone = stone
+                                mining_timer = 0
+                                current_direction = "idle"
+                                break
+                        else:
+                            _handle_flower_picking(player_world_rect, assets)
                     else:
                         _handle_flower_picking(player_world_rect, assets)
+
                 # DUNGEON level interactions
                 elif current_level == "dungeon":
                     if dungeon_exit and player_world_rect.colliderect(dungeon_exit.inflate(20, 20)):
