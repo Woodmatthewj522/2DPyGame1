@@ -59,10 +59,12 @@ EQUIPMENT_PANEL_WIDTH = 4 * EQUIPMENT_SLOT_SIZE + 4 * EQUIPMENT_GAP + 20
 EQUIPMENT_PANEL_HEIGHT = 2 * EQUIPMENT_SLOT_SIZE + 4 * EQUIPMENT_GAP + 100  # Extra space for stats
 EQUIPMENT_X = (WIDTH - EQUIPMENT_PANEL_WIDTH) // 2
 EQUIPMENT_Y = (HEIGHT - EQUIPMENT_PANEL_HEIGHT) // 2
+
 # Inventory drag-and-drop
 dragging_item = None
 dragging_from_slot = None
 drag_offset = (0, 0)
+
 # Dungeon constants
 DUNGEON_SIZE = 30
 DUNGEON_SPAWN_X = 5 * TILE_SIZE
@@ -80,6 +82,7 @@ water_tiles = []
 path_tiles = []
 zone2_merchant_rect = None
 zone2_return_portal = None
+
 # Music constants
 MUSIC_FILES = {
     "main_menu": "main.mp3",       # points to main.mp3
@@ -90,6 +93,40 @@ MUSIC_FILES = {
 }
 walk_sound = None
 # --- CLASSES ---
+class ActionBar:
+    def __init__(self, x, y, slot_size=40, num_slots=5):
+        self.x = x
+        self.y = y
+        self.slot_size = slot_size
+        self.num_slots = num_slots
+        self.slots = [None] * num_slots  # each slot holds an Item or None
+
+    def draw(self, screen, font=None):
+        for i in range(self.num_slots):
+            rect = pygame.Rect(self.x + i * (self.slot_size + 5), self.y, self.slot_size, self.slot_size)
+            pygame.draw.rect(screen, (60, 60, 60), rect)  # background
+            pygame.draw.rect(screen, (200, 200, 200), rect, 2)  # border
+
+            item = self.slots[i]
+            if item:
+                screen.blit(item.image, rect.topleft)
+                if item.count > 1 and font:
+                    count_surf = font.render(str(item.count), True, (255, 255, 255))
+                    screen.blit(count_surf, (rect.right - count_surf.get_width() - 2,
+                                             rect.bottom - count_surf.get_height() - 2))
+
+    def handle_event(self, event, player):
+        if event.type == pygame.MOUSEBUTTONDOWN and event.button == 3:  # right click
+            mx, my = event.pos
+            for i in range(self.num_slots):
+                rect = pygame.Rect(self.x + i * (self.slot_size + 5), self.y, self.slot_size, self.slot_size)
+                if rect.collidepoint(mx, my):
+                    item = self.slots[i]
+                    if item and item.name.lower() == "potion":
+                        player.heal(25)  # or item-specific heal
+                        item.count -= 1
+                        if item.count <= 0:
+                            self.slots[i] = None
 class Item:
     def __init__(self, name, image=None, count=1, category=None, damage=0, defense=0):
         if image is None:
@@ -151,6 +188,7 @@ class Player:
         self.base_max_health = PLAYER_MAX_HEALTH
         self.base_damage = PLAYER_BASE_DAMAGE
         self.base_defense = PLAYER_BASE_DEFENSE
+        self.base_speed = PLAYER_SPEED
         # Dynamic stats
         self.max_health = self.base_max_health
         self.health = self.max_health
@@ -290,7 +328,7 @@ class Player:
         global show_level_up, level_up_timer, level_up_text
         show_level_up = True
         level_up_timer = 0
-        level_up_text = f"LEVEL UP! Level {self.level}"
+        level_up_text = f"Level {self.level}!"
 
         print(f"⬆️ Level {self.level} | HP: {self.max_health} | Defense: {self.get_total_defense()}")
 
@@ -347,6 +385,13 @@ class Player:
                 data["duration"] -= dt
         for effect in expired:
             del self.status_effects[effect]
+    def get_current_speed(self):
+        """Return current movement speed, including buffs/debuffs."""
+        speed = self.base_speed
+        for effect, data in self.status_effects.items():
+            if effect == "speed":
+                speed += data.get("speed_bonus", 0)
+        return speed
 
     # ------------------------
     # Update Loop
@@ -622,54 +667,80 @@ class Enemy:
     # Collision Helper
     # ------------------------
     def _resolve_collisions(self, obstacles, axis, old_rect):
+        """Resolve collisions separately per axis — allows sliding along walls."""
         for obstacle in obstacles:
             if self.rect.colliderect(obstacle):
                 if axis == "x":
-                    self.rect.x = old_rect.x
+                    if self.rect.centerx > obstacle.centerx:  # coming from right
+                        self.rect.left = obstacle.right
+                    else:  # coming from left
+                        self.rect.right = obstacle.left
                 elif axis == "y":
-                    self.rect.y = old_rect.y
-                break
+                    if self.rect.centery > obstacle.centery:  # coming from below
+                        self.rect.top = obstacle.bottom
+                    else:  # coming from above
+                        self.rect.bottom = obstacle.top
+
 class EnemySpawnPoint:
-    def __init__(self, x, y, enemy_type, respawn_time=25000):
+    def __init__(self, x, y, enemy_type, respawn_time=25000, check_radius=80):
         self.x = x
         self.y = y
         self.enemy_type = enemy_type
         self.respawn_time = respawn_time
         self.last_spawn_time = 0
         self.current_enemy = None
-        self.enemy_id = None  # Track unique enemy ID
+        self.enemy_id = None
+        self.check_radius = check_radius  # how far around to check for valid spots
 
     def can_spawn(self, current_time):
-        """Check if enough time has passed since last spawn."""
-        # If we still have an active enemy, don't spawn again
         if self.current_enemy is not None:
-            # Check if enemy is still alive
-            if self.current_enemy in enemies and hasattr(self.current_enemy, 'is_alive'):
-                if self.current_enemy.is_alive:
-                    return False
-            # Enemy is dead or removed, clear reference
+            if self.current_enemy in enemies and getattr(self.current_enemy, "is_alive", False):
+                return False
             self.current_enemy = None
+        return (current_time - self.last_spawn_time) >= self.respawn_time
 
-        time_since_last = (current_time - self.last_spawn_time)
-        return time_since_last >= self.respawn_time
+    def _find_safe_spawn_position(self, obstacles):
+        """Find a nearby open tile that doesn't collide with walls or stones."""
+        import random
+        test_rect = pygame.Rect(0, 0, TILE_SIZE, TILE_SIZE)
 
-    def spawn_enemy(self, current_time, force=False):
-        if force or self.can_spawn(current_time):
-            enemy = Enemy(self.x, self.y, self.enemy_type, frames=enemy_frames)
-            enemy.spawn_point = self  # Back-reference to spawn point
-            enemy.is_alive = True
-            self.last_spawn_time = current_time
-            self.current_enemy = enemy
-            self.enemy_id = id(enemy)  # Store unique ID
-            return enemy
+        for _ in range(40):  # Try up to 40 random nearby spots
+            dx = random.randint(-self.check_radius, self.check_radius)
+            dy = random.randint(-self.check_radius, self.check_radius)
+            test_rect.center = (self.x + dx, self.y + dy)
+
+            # Skip if colliding with any obstacle
+            if not any(test_rect.colliderect(o) for o in obstacles):
+                return test_rect.center
+
+        # No valid open space found
         return None
-    
+
+    def spawn_enemy(self, current_time, obstacles, force=False):
+        if not force and not self.can_spawn(current_time):
+            return None
+
+        safe_pos = self._find_safe_spawn_position(obstacles)
+        if safe_pos is None:
+            # couldn't find a safe place — skip spawn for now
+            return None
+
+        x, y = safe_pos
+        enemy = Enemy(x, y, self.enemy_type, frames=enemy_frames)
+        enemy.spawn_point = self
+        enemy.is_alive = True
+
+        self.last_spawn_time = current_time
+        self.current_enemy = enemy
+        self.enemy_id = id(enemy)
+
+        return enemy
+
     def notify_enemy_death(self, current_time):
-        """Called when this spawn point's enemy dies."""
         self.current_enemy = None
         self.enemy_id = None
-        # Reset timer so respawn counts from death, not spawn
         self.last_spawn_time = current_time
+
 
 class Boss(Enemy):
     def __init__(self, x, y, boss_data=None):
@@ -1089,6 +1160,10 @@ save_slots = [None, None, None, None]  # 4 save slots
 menu_selected_option = 0
 boss_enemy = None
 music_volume = 0.5
+
+# action bar
+action_bar = ActionBar(50, HEIGHT - 60, slot_size=40, num_slots=6)
+
 # --- HELPERS FOR COORDINATES ---
 def get_player_world_rect():
     """Return the player's rectangle in world coordinates."""
@@ -1197,7 +1272,7 @@ def draw_pause_menu(screen, assets):
     
     # Main panel
     panel_width = 400
-    panel_height = 300
+    panel_height = 350
     panel_x = (WIDTH - panel_width) // 2
     panel_y = (HEIGHT - panel_height) // 2
     panel_rect = pygame.Rect(panel_x, panel_y, panel_width, panel_height)
@@ -1245,11 +1320,7 @@ def draw_pause_menu(screen, assets):
         
         # Store rect for clicking
         pause_button_rects[option.lower().replace(" ", "_")] = button_rect
-    
-    # Instructions
-    instruction_text = assets["small_font"].render("Use arrow keys or mouse to navigate, ENTER or click to select", True, (200, 200, 200))
-    instruction_rect = instruction_text.get_rect(center=(WIDTH // 2, panel_y + panel_height - 30))
-    screen.blit(instruction_text, instruction_rect)
+
 def update_camera():
     global map_offset_x, map_offset_y
     margin_x = WIDTH // 4
@@ -1599,30 +1670,36 @@ def setup_boss_room(filename="boss_room.txt"):
     spawn_x, spawn_y = map_data["spawn_point"]
     return (spawn_x, spawn_y)
 
-def update_enemy_spawns():
+def update_enemy_spawns(obstacles=None):
+    """Handles enemy respawning for the current dungeon level, ensuring no wall clipping."""
     if current_level != "dungeon":
         return
 
     current_time = pygame.time.get_ticks()
     total_before = len(enemies)
+    spawned_count = 0
 
     for sp in enemy_spawn_points:
-        # Clean up dead reference
+        # Clean up invalid or dead enemy references
         if sp.current_enemy and sp.current_enemy not in enemies:
-            print(f"Cleaning up dead {sp.enemy_type} at ({sp.x},{sp.y})")
+            print(f"[CLEANUP] Removed dead {sp.enemy_type} from spawn ({sp.x}, {sp.y})")
             sp.current_enemy = None
 
-        # Respawn if empty and cooldown passed
+        # Try respawning if the slot is empty
         if sp.current_enemy is None:
-            enemy = sp.spawn_enemy(current_time)
+            # Pass obstacle list if available (prevents wall clipping)
+            enemy = sp.spawn_enemy(current_time, obstacles or [])
             if enemy:
                 enemies.append(enemy)
                 sp.current_enemy = enemy
-                print(f"[RESPAWN] {enemy.type} at {enemy.rect.topleft}")
+                spawned_count += 1
+                print(f"[SPAWN] {enemy.type} at {enemy.rect.topleft}")
 
     total_after = len(enemies)
-    if total_after > total_before:
-        print(f"Enemy count increased from {total_before} to {total_after}")
+    if spawned_count > 0:
+        print(f"[ENEMY SPAWNS] +{spawned_count} (Total: {total_after})")
+
+    return spawned_count
 
 def load_dungeon_map_with_enemies(dungeon1):
     global enemy_spawn_points  
@@ -2059,7 +2136,6 @@ def _update_crafting(current_time, assets, dt):
             crafting_timer = 0
 
 
-
 def start_new_game():
     """Initialize a new game with default values."""
     global current_level, map_offset_x, map_offset_y, player_pos
@@ -2251,6 +2327,7 @@ def load_assets():
 
     # --- Items ---
     potion_image = try_load_image("PotionR.png", (TILE_SIZE, TILE_SIZE), (150, 0, 150))
+    potion2_image = try_load_image("PotionB.png", (TILE_SIZE, TILE_SIZE), (0, 0, 255))
     coin_image = try_load_image("Coin.png", (TILE_SIZE, TILE_SIZE), (255, 215, 0))
     sword_image = try_load_image("sword1.png", (TILE_SIZE, TILE_SIZE), (192, 192, 192))
     axe_image = try_load_image("axe.png", (TILE_SIZE, TILE_SIZE), (139, 69, 19))
@@ -2318,6 +2395,7 @@ def load_assets():
     stone_item = Item("Stone", stone_image)
     ore_item = Item("Ore", ore_image)
     flower_item = Item("Flower", flower_images[0])
+    potion2_item = Item("Speed Potion", potion2_image)
     potion_item = Item("Potion", potion_image)
     coin_item = Item("Coin", coin_image)
     chest_item = Item("Chest Armor", chest_image, category="Armor", damage=0, defense=10)
@@ -2369,6 +2447,7 @@ def load_assets():
         "ore_img": ore_image,
         "flower_item": flower_item,
         "potion_item": potion_item,
+        "potion2_item": potion2_item,
         "coin_item": coin_item,
         "sword_item": sword_item,
         "chest_item": chest_item,
@@ -3034,7 +3113,7 @@ def unequip_item_from_slot(slot_name):
     return False
 # Fixed inventory click handling in main game loop
 def handle_inventory_mouse_down(mouse_pos, button=1):
-    """Handle starting to drag an item from inventory, or right-click to equip."""
+    """Handle starting to drag an item from inventory, or right-click to equip/use."""
     global dragging_item, dragging_from_slot, drag_offset, inventory
 
     if not show_inventory:
@@ -3055,18 +3134,40 @@ def handle_inventory_mouse_down(mouse_pos, button=1):
                 if button == 1:
                     dragging_item = item
                     dragging_from_slot = (row, col)
-                    drag_offset = (mouse_pos[0] - slot_rect.centerx, mouse_pos[1] - slot_rect.centery)
+                    drag_offset = (mouse_pos[0] - slot_rect.centerx,
+                                   mouse_pos[1] - slot_rect.centery)
                     return True
 
-                # Right click = equip
+                # Right click = equip OR use
                 elif button == 3:
-                    if (hasattr(item, 'category') and item.category in ["Weapon", "Armor", "Helmet", "Boots"]) or \
+                    # --- Equipment ---
+                    if (hasattr(item, 'category') and item.category in
+                        ["Weapon", "Armor", "Helmet", "Boots"]) or \
                        item.name in ["Axe", "Pickaxe", "Sword", "Helmet", "Chest Armor", "Boots"]:
                         if equip_item(item):
                             inventory[row][col] = None
                             print(f"Equipped {item.name}")
                             return True
-    return False
+
+                    # --- Consumables (potions, food, etc.) ---
+                    elif item.name.lower().endswith("potion"):
+                        if item.name.lower() == "speed potion":
+                            # Apply a temporary speed buff
+                            player.add_status_effect("speed", duration=10000, speed_bonus=4)
+                            print("Speed boosted!")
+                        else:
+                            # Default potion effect = heal
+                            player.heal(25)
+
+                        # Decrement stack count
+                        item.count -= 1
+                        if item.count <= 0:
+                            inventory[row][col] = None
+
+                        return True
+
+                    return False
+
 
 
 def handle_inventory_mouse_up(mouse_pos):
@@ -3513,7 +3614,8 @@ def _handle_smithing_crafting(event, assets):
 def _handle_alchemy_crafting(event, assets):
     """Handle alchemy crafting clicks."""
     global is_crafting, crafting_timer, item_to_craft
-    
+
+    # --- Potion (Health) ---
     if potion_button_rect and potion_button_rect.collidepoint(event.pos):
         if get_item_count("Flower") >= 3:
             is_crafting = True
@@ -3522,7 +3624,19 @@ def _handle_alchemy_crafting(event, assets):
             remove_item_from_inventory("Flower", 3)
             print("Brewing a Potion...")
         else:
-            print("Not enough flowers!")
+            print("Not enough flowers for Potion!")
+
+    # --- Potion 2 (Speed) ---
+    elif potion2_button_rect and potion2_button_rect.collidepoint(event.pos):
+        if get_item_count("Flower") >= 5:
+            is_crafting = True
+            crafting_timer = 0
+            item_to_craft = assets["speed_potion_item"]  # ✅ use correct key here
+            remove_item_from_inventory("Flower", 5)
+            print("Brewing a Speed Potion...")
+        else:
+            print("Not enough flowers for Speed Potion!")
+
 
 def _update_npc_animations(dt):
     """Update NPC idle animations."""
@@ -4210,6 +4324,7 @@ def get_shop_items(assets):
     """Returns the items available in the shop with their prices."""
     return {
         "Potion": {"item": assets["potion_item"], "buy_price": 15, "sell_price": 8},
+        "Potion2": {"item": assets["potion2_item"], "buy_price": 30, "sell_price": 15},
         "Log": {"item": assets["log_item"], "buy_price": 5, "sell_price": 2},
         "Stone": {"item": assets["stone_item"], "buy_price": 8, "sell_price": 3},
         "Ore": {"item": assets["ore_item"], "buy_price": 20, "sell_price": 12},
@@ -4230,7 +4345,7 @@ def draw_vendor_gui(screen, assets):
 
     # --- Main panel ---
     panel_width = 600
-    panel_height = 400
+    panel_height = 550
     panel_x = (WIDTH - panel_width) // 2
     panel_y = (HEIGHT - panel_height) // 2
     panel_rect = pygame.Rect(panel_x, panel_y, panel_width, panel_height)
@@ -4914,7 +5029,7 @@ def draw_inventory(screen, assets):
 
 def draw_crafting_panel(screen, assets, is_hovering):
     """Draws the crafting GUI with tabs for smithing and alchemy, plus a close button."""
-    global axe_button_rect, pickaxe_button_rect, potion_button_rect, sword_button_rect
+    global axe_button_rect, pickaxe_button_rect,potion2_button_rect, potion_button_rect, sword_button_rect
     global alchemy_tab_rect, smithing_tab_rect, cooking_tab_rect, show_crafting, crafting_tab
 
     if not show_crafting:
@@ -5093,38 +5208,61 @@ def draw_smithing_content(screen, assets, content_y):
 def draw_alchemy_content(screen, assets, content_y):
     """Draws the alchemy crafting options."""
     global potion_button_rect
+    global potion2_button_rect
 
     button_width, button_height, gap = 180, 50, 20
     flower_count = get_item_count("Flower")
 
-    # Potion Button
+    mouse_pos = pygame.mouse.get_pos()
+
+    # ===== Potion 1 =====
     potion_button_rect = pygame.Rect(CRAFTING_X + gap, content_y + gap, button_width, button_height)
     req_flowers = 3
-
     can_craft = flower_count >= req_flowers
-    mouse_pos = pygame.mouse.get_pos()
 
     if is_crafting and item_to_craft and item_to_craft.name == "Potion":
         progress = (crafting_timer / CRAFTING_TIME_MS) * 100
         text_to_display = f"Brewing... {int(progress)}%"
         color = (120, 120, 120)
-
-    elif potion_button_rect.collidepoint(mouse_pos):  # <-- hover detection
-        text_to_display = f"Potion: {flower_count}/{req_flowers} Flowers"
+    elif potion_button_rect.collidepoint(mouse_pos):
+        text_to_display = f"Req: {flower_count}/{req_flowers} Flowers"
         color = (100, 0, 100) if can_craft else (50, 50, 50)
-
     else:
-        text_to_display = "Brew Potion"
+        text_to_display = "Health Potion"
         color = (150, 0, 150) if can_craft else (70, 70, 70)
 
-    # Draw button
     pygame.draw.rect(screen, color, potion_button_rect)
     pygame.draw.rect(screen, (150, 150, 150), potion_button_rect, 2)
 
-    # Draw text centered
     text_surface = assets["small_font"].render(text_to_display, True, (255, 255, 255))
     text_rect = text_surface.get_rect(center=potion_button_rect.center)
     screen.blit(text_surface, text_rect)
+
+    # ===== Potion 2 =====
+    potion2_button_rect = pygame.Rect(
+        CRAFTING_X + gap, potion_button_rect.bottom + gap, button_width, button_height
+    )
+    req_flowers2 = 5
+    can_craft2 = flower_count >= req_flowers2
+
+    if is_crafting and item_to_craft and item_to_craft.name == "Potion 2":
+        progress = (crafting_timer / CRAFTING_TIME_MS) * 100
+        text_to_display2 = f"Brewing... {int(progress)}%"
+        color2 = (120, 120, 120)
+    elif potion2_button_rect.collidepoint(mouse_pos):
+        text_to_display2 = f"Req: {flower_count}/{req_flowers2} Flowers"
+        color2 = (0, 100, 150) if can_craft2 else (50, 50, 50)
+    else:
+        text_to_display2 = "Speed Potion"
+        color2 = (0, 150, 200) if can_craft2 else (70, 70, 70)
+
+    pygame.draw.rect(screen, color2, potion2_button_rect)
+    pygame.draw.rect(screen, (150, 150, 150), potion2_button_rect, 2)
+
+    text_surface2 = assets["small_font"].render(text_to_display2, True, (255, 255, 255))
+    text_rect2 = text_surface2.get_rect(center=potion2_button_rect.center)
+    screen.blit(text_surface2, text_rect2)
+
 def draw_equipment_panel(screen, assets):
     """Draws a polished equipment GUI with 2 rows, 4 columns, stats display, and a close button."""
     global equipment_slots, show_equipment
@@ -5352,21 +5490,23 @@ def draw_hud(screen, assets):
 def handle_movement(keys):
     global current_direction, last_direction, player_movement_history
 
+    speed = player.get_current_speed()   # <-- use buffed speed
     dx = dy = 0
     new_direction = None
 
     if keys[pygame.K_a]:
-        dx -= PLAYER_SPEED
+        dx -= speed
         new_direction = "left"
     if keys[pygame.K_d]:
-        dx += PLAYER_SPEED
+        dx += speed
         new_direction = "right"
     if keys[pygame.K_w]:
-        dy -= PLAYER_SPEED
+        dy -= speed
         new_direction = "up"
     if keys[pygame.K_s]:
-        dy += PLAYER_SPEED
+        dy += speed
         new_direction = "down"
+
 
     # Update directions and track movement
     if new_direction:
@@ -5437,7 +5577,26 @@ def use_potion():
         print("No potions available!")
         return False
 
+def use_potion2():
+    """Uses a speed potion from inventory to temporarily increase player speed."""
+    if get_item_count("Potion 2") > 0:
+        remove_item_from_inventory("Potion 2", 1)
+        speed_boost = 2.0      # Speed multiplier
+        boost_duration = 5000  # milliseconds (5 seconds)
 
+        if not getattr(player, "speed_boost_active", False):
+            player.speed *= speed_boost
+            player.speed_boost_active = True
+            player.speed_boost_end_time = pygame.time.get_ticks() + boost_duration
+
+            print("Used Potion 2! Speed boosted temporarily.")
+            return True
+        else:
+            print("Speed boost already active!")
+            return False
+    else:
+        print("No speed potions available!")
+        return False
 def handle_main_menu_events(screen, assets, dt):
     global game_state, menu_selected_option
     
@@ -5694,9 +5853,9 @@ def handle_playing_state(screen, assets, dt):
     # Enemy spawning & updates (level-specific)
     # -------------------------
     if current_level == "dungeon":
-        update_enemy_spawns()
-        player_world_rect = get_player_world_rect()
         obstacles = dungeon_walls + stone_rects
+        update_enemy_spawns(obstacles)  # pass obstacles in
+        player_world_rect = get_player_world_rect()
 
         # Update each enemy (Boss special-case handled inside update loops)
         for enemy in enemies[:]:
@@ -5746,6 +5905,8 @@ def handle_playing_state(screen, assets, dt):
     # Event handling (keyboard + mouse)
     # -------------------------
     for event in pygame.event.get():
+        action_bar.handle_event(event, player)
+
         if event.type == pygame.QUIT:
             pygame.quit()
             sys.exit()
@@ -5800,7 +5961,6 @@ def handle_playing_state(screen, assets, dt):
             # Movement/utility controls
             elif event.key == pygame.K_h:
                 use_potion()
-
             # UI toggles (keep single-panel behavior)
             elif event.key == pygame.K_b:
                 show_inventory = not show_inventory
@@ -6044,6 +6204,7 @@ def handle_playing_state(screen, assets, dt):
     _draw_game_world(screen, assets, enemy_frames)
     _draw_player(screen, player_frames, attack_frames, chopping_frames)
     _draw_ui_elements(screen, assets, player_frames, attack_frames, chopping_frames, None)
+    action_bar.draw(screen,)
 
     # Draw dialogs / panels on top
     draw_npc_dialog(screen, assets)
