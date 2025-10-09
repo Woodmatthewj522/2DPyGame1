@@ -3631,7 +3631,7 @@ def _handle_alchemy_crafting(event, assets):
         if get_item_count("Flower") >= 5:
             is_crafting = True
             crafting_timer = 0
-            item_to_craft = assets["speed_potion_item"]  # ✅ use correct key here
+            item_to_craft = assets["potion2_item"]  # ✅ use correct key here
             remove_item_from_inventory("Flower", 5)
             print("Brewing a Speed Potion...")
         else:
