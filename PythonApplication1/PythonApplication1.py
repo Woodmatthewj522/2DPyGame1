@@ -80,6 +80,7 @@ shop_scroll_offset = 0
 crystal_rects = []
 water_tiles = []
 path_tiles = []
+path2_tiles = []
 zone2_merchant_rect = None
 zone2_return_portal = None
 
@@ -1477,7 +1478,8 @@ def load_text_map(filename):
         'B': 'boss1_portal',
         'L': 'lava',
         'W': 'water',     
-        'R': 'path' 
+        'R': 'path',
+        'U': 'path2'
     }
 
     try:
@@ -1541,6 +1543,11 @@ def load_text_map(filename):
                     elif char == 'R':
                         map_data['tiles'].append({
                             'type': 'path',
+                            'rect': pygame.Rect(x, y, TILE_SIZE, TILE_SIZE)
+                        })
+                    elif char == 'U':
+                        map_data['tiles'].append({
+                            'type': 'path2',
                             'rect': pygame.Rect(x, y, TILE_SIZE, TILE_SIZE)
                         })
     except FileNotFoundError:
@@ -1795,6 +1802,8 @@ def apply_map_data(map_data):
             path_tiles.append(tile['rect'])
         elif tile['type'] == 'carrot':
             carrot_tiles.append(tile['pos'])
+        elif tile['type'] == 'path2':
+            path2_tiles.append(tile['rect'])
     # Apply entities
     for entity in map_data['entities']:
         x, y = entity['pos']
@@ -2302,7 +2311,8 @@ def load_assets():
     grass_image = try_load_image(os.path.join("Tiles", "grass_middle.png"), (TILE_SIZE, TILE_SIZE), (34, 139, 34))
     tree_image = try_load_image(os.path.join("Tiles", "tree.png"), (TILE_SIZE + 5, TILE_SIZE + 5), (101, 67, 33))
     water_image = try_load_image("water_middle.png", (TILE_SIZE, TILE_SIZE), (50, 100, 200))
-    path_image = try_load_image("path_middle.png", (TILE_SIZE, TILE_SIZE), (139, 90, 43))
+    path_image = try_load_image(os.path.join("Tiles", "path_middle.png"), (TILE_SIZE, TILE_SIZE), (139, 90, 43))
+    path2_image = try_load_image(os.path.join("Tiles", "path2_middle.png"), (TILE_SIZE, TILE_SIZE), (160, 82, 45))
     house_image = try_load_image(os.path.join("Tiles", "house.png"), (TILE_SIZE * 2, TILE_SIZE * 2), (139, 69, 19))
     house1_image = try_load_image(os.path.join("Tiles", "house1.png"), (TILE_SIZE * 2, TILE_SIZE * 2), (160, 82, 45))
     house2_image = try_load_image(os.path.join("Tiles", "house2.png"), (TILE_SIZE * 2, TILE_SIZE * 2), (205, 133, 63))
@@ -2420,6 +2430,7 @@ def load_assets():
         "leaf": leaf_image,
         "water": water_image,
         "path": path_image,
+        "path2": path2_image,
         "carrot_tile": carrot_tile_image,
         # Portal / Dungeon
         "boss1_portal": boss1_portal,
@@ -4266,7 +4277,9 @@ def draw_world(screen, assets):
     # Draw path tiles
     for path in path_tiles:
         screen.blit(assets["path"], (path.x - map_offset_x, path.y - map_offset_y))
-
+    # Draw path2 tiles
+    for path in path2_tiles:
+        screen.blit(assets["path2"], (path.x - map_offset_x, path.y - map_offset_y))
     # Draw water tiles  
     for water in water_tiles:
         screen.blit(assets["water"], (water.x - map_offset_x, water.y - map_offset_y))
@@ -4766,7 +4779,7 @@ def draw_miner_dialog(screen, assets):
                 remove_item_from_inventory("Ore", ore_needed)
                 miner_quest_active = False
                 miner_quest_completed = True
-                add_item_to_inventory("Coin", count=15)
+                add_item_to_inventory("Coin", 15)
                 show_miner_dialog = False
                 print("✅ Miner quest completed! 15 coins rewarded.")
 
@@ -5383,7 +5396,6 @@ def draw_quests_panel(screen, assets):
     panel_x = WIDTH - panel_width - 20
     panel_y = 100
     panel_rect = pygame.Rect(panel_x, panel_y, panel_width, panel_height)
-
     pygame.draw.rect(screen, (35, 35, 45), panel_rect)
     pygame.draw.rect(screen, (255, 255, 255), panel_rect, 2)
 
@@ -5454,9 +5466,9 @@ def draw_hud(screen, assets):
 
     mouse_pos = pygame.mouse.get_pos()
 
-    spacing = 70  # a little more spacing since icons are bigger
+    spacing = 60  # a little more spacing since icons are bigger
     start_x = WIDTH - 50
-    y_pos = HEIGHT - 70   # bottom‑right corner
+    y_pos = HEIGHT - 40   # bottom‑right corner
 
     for i, (name, icon, label, tooltip) in enumerate(icons):
         # --- Scale icon up slightly ---
@@ -5905,7 +5917,6 @@ def handle_playing_state(screen, assets, dt):
     # Event handling (keyboard + mouse)
     # -------------------------
     for event in pygame.event.get():
-        action_bar.handle_event(event, player)
 
         if event.type == pygame.QUIT:
             pygame.quit()
@@ -6204,7 +6215,6 @@ def handle_playing_state(screen, assets, dt):
     _draw_game_world(screen, assets, enemy_frames)
     _draw_player(screen, player_frames, attack_frames, chopping_frames)
     _draw_ui_elements(screen, assets, player_frames, attack_frames, chopping_frames, None)
-    action_bar.draw(screen,)
 
     # Draw dialogs / panels on top
     draw_npc_dialog(screen, assets)
